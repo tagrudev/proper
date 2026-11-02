@@ -5,8 +5,11 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
+use anyhow::bail;
+
 use crate::agents::Tree;
-use crate::sidebar::{Command, Input, State, reduce};
+use crate::config::Project;
+use crate::sidebar::{Command, Input, Program, State, reduce};
 use crate::view::render;
 use crate::workspace::Workspace;
 
@@ -71,6 +74,22 @@ impl Sidebar {
     fn execute(&self, command: &Command) -> Result<Flow> {
         match command {
             Command::Quit => Ok(Flow::Exit),
+            Command::Select { window_id, pane_id } => {
+                self.workspace.select(window_id, pane_id)?;
+                Ok(Flow::Continue)
+            }
+            Command::New { project, program } => {
+                if project.path.as_os_str().is_empty() {
+                    bail!("{} has no directory on record; run proper add", project.name);
+                }
+                let project = Project { name: project.name.clone(), path: project.path.clone() };
+                let command = match program {
+                    Program::Claude => vec!["claude".to_string()],
+                    Program::Shell => vec![std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())],
+                };
+                self.workspace.new_agent(&project, None, &command)?;
+                Ok(Flow::Continue)
+            }
             Command::Detach => {
                 self.workspace.detach()?;
                 Ok(Flow::Continue)

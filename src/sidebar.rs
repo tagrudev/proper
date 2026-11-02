@@ -31,8 +31,22 @@ pub enum Input {
     Snapshot(Tree),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Program {
+    Claude,
+    Shell,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    Select {
+        window_id: String,
+        pane_id: String,
+    },
+    New {
+        project: ProjectRow,
+        program: Program,
+    },
     Detach,
     Quit,
 }
@@ -85,6 +99,21 @@ impl State {
         }
     }
 
+    fn row(&self) -> Option<&Row> {
+        self.rows.get(self.cursor)
+    }
+
+    /// The project the cursor is in: the row itself or the agent's project header.
+    fn project_at_cursor(&self) -> Option<ProjectRow> {
+        match self.row()? {
+            Row::Project(project) => Some(project.clone()),
+            Row::Agent(agent) => self.rows.iter().find_map(|row| match row {
+                Row::Project(project) if project.name == agent.project => Some(project.clone()),
+                _ => None,
+            }),
+        }
+    }
+
     fn moved(self, delta: isize) -> State {
         let last = self.rows.len().saturating_sub(1) as isize;
         let cursor = (self.cursor as isize + delta).clamp(0, last) as usize;
@@ -106,6 +135,11 @@ fn rows(tree: Tree) -> Vec<Row> {
         .collect()
 }
 
+fn current_agent(rows: &[Row]) -> Option<usize> {
+    rows.iter()
+        .position(|row| matches!(row, Row::Agent(agent) if agent.current))
+}
+
 /// Rows keep their identity across snapshots by project name or agent pane.
 fn same_row(a: &Row, b: &Row) -> bool {
     match (a, b) {
@@ -119,10 +153,14 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
     match input {
         Input::Snapshot(tree) => {
             let rows = rows(tree);
-            let cursor = state
-                .rows
-                .get(state.cursor)
-                .and_then(|current| rows.iter().position(|row| same_row(row, current)))
+            let newly_current =
+                current_agent(&rows).filter(|now| current_agent(&state.rows) != Some(*now));
+            let cursor = newly_current
+                .or_else(|| {
+                    state
+                        .row()
+                        .and_then(|current| rows.iter().position(|row| same_row(row, current)))
+                })
                 .unwrap_or(state.cursor.min(rows.len().saturating_sub(1)));
             (
                 State {
@@ -160,6 +198,30 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => (state.moved(1), None),
         KeyCode::Char('k') | KeyCode::Up => (state.moved(-1), None),
+        KeyCode::Enter => {
+            let command = match state.row() {
+                Some(Row::Agent(agent)) => Some(Command::Select {
+                    window_id: agent.window_id.clone(),
+                    pane_id: agent.pane_id.clone(),
+                }),
+                _ => None,
+            };
+            (state, command)
+        }
+        KeyCode::Char('n') => {
+            let command = state.project_at_cursor().map(|project| Command::New {
+                project,
+                program: Program::Claude,
+            });
+            (state, command)
+        }
+        KeyCode::Char('s') => {
+            let command = state.project_at_cursor().map(|project| Command::New {
+                project,
+                program: Program::Shell,
+            });
+            (state, command)
+        }
         KeyCode::Char('?') => (
             State {
                 mode: Mode::Help,
@@ -395,6 +457,119 @@ mod agent_tests {
             }),
         );
         assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn enter_on_an_agent_selects_its_window_and_pane() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j'));
+        let (_, command) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::Select {
+                window_id: "@2".into(),
+                pane_id: "%2".into()
+            })
+        );
+    }
+
+    #[test]
+    fn n_and_s_start_agents_in_the_project_under_the_cursor() {
+        let state = State::new(tree(), Some("%1".into()));
+        let (_, command) = reduce(
+            state.clone(),
+            Input::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("project"),
+                program: Program::Claude
+            })
+        );
+        let (_, command) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("project"),
+                program: Program::Shell
+            })
+        );
+    }
+
+    #[test]
+    fn n_on_an_agent_row_uses_that_agents_project() {
+        let state = press(
+            press(
+                press(State::new(tree(), Some("%1".into())), KeyCode::Char('j')),
+                KeyCode::Char('j'),
+            ),
+            KeyCode::Char('j'),
+        );
+        let (_, command) = reduce(
+            state.clone(),
+            Input::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("znaiko"),
+                program: Program::Claude
+            })
+        );
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j'));
+        let (_, command) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("project"),
+                program: Program::Claude
+            })
+        );
+    }
+
+    #[test]
+    fn n_with_no_rows_does_nothing() {
+        let state = State::new(Tree::default(), Some("%1".into()));
+        let (_, command) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+        assert_eq!(command, None);
+    }
+
+    #[test]
+    fn the_cursor_snaps_to_the_agent_whose_window_became_current() {
+        let state = State::new(tree(), Some("%1".into()));
+        assert_eq!(state.cursor(), 0);
+        let mut now_current = tree();
+        now_current.projects[0].agents[1].current = true;
+        let (state, _) = reduce(state, Input::Snapshot(now_current.clone()));
+        assert!(matches!(&state.rows()[state.cursor()], Row::Agent(a) if a.name == "zsh"));
+
+        let state = press(state, KeyCode::Char('k'));
+        let (state, _) = reduce(state, Input::Snapshot(now_current));
+        assert_eq!(
+            state.cursor(),
+            1,
+            "an unchanged current window leaves the cursor alone"
+        );
+    }
+
+    fn project_row(name: &str) -> ProjectRow {
+        ProjectRow {
+            name: name.into(),
+            path: PathBuf::from(format!("/p/{name}")),
+            registered: true,
+        }
     }
 
     #[test]

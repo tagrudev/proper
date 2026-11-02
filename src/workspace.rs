@@ -171,6 +171,12 @@ impl Workspace {
         })
     }
 
+    /// Shows an agent's window and puts the cursor in its pane.
+    pub fn select(&self, window_id: &str, pane_id: &str) -> Result<()> {
+        self.server.run(&self.server.argv(["select-window", "-t", window_id, ";", "select-pane", "-t", pane_id]))?;
+        Ok(())
+    }
+
     /// Detaches the client this process runs under; the server and its agents live on.
     pub fn detach(&self) -> Result<()> {
         self.server.run(&self.server.argv(["detach-client"]))?;
