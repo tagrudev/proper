@@ -71,3 +71,47 @@ fn add_defaults_to_the_current_directory() {
             .contains("name = \"here\"")
     );
 }
+
+#[test]
+fn running_proper_without_a_terminal_still_brings_the_server_up() {
+    let d = tempfile::tempdir().unwrap();
+    let socket = format!("proper-cli-{}", std::process::id());
+    let out = Command::new(env!("CARGO_BIN_EXE_proper"))
+        .env("PROPER_CONFIG_DIR", d.path())
+        .env("PROPER_SOCKET", &socket)
+        .env_remove("TMUX")
+        .output()
+        .unwrap();
+    let server = proper::tmux::Server::new(socket);
+    let panes = server.list_panes();
+    let _ = server.run(&server.argv(["kill-server"]));
+
+    assert!(!out.status.success(), "attach cannot work without a tty");
+    assert!(
+        text(&out.stderr).contains("not a terminal"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(
+        panes.unwrap().len(),
+        2,
+        "home window with sidebar and hint exists"
+    );
+}
+
+#[test]
+fn running_proper_inside_a_foreign_tmux_is_refused() {
+    let d = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_proper"))
+        .env("PROPER_CONFIG_DIR", d.path())
+        .env("PROPER_SOCKET", "proper-never-started")
+        .env("TMUX", "/tmp/tmux-501/default,1,0")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("plain terminal"),
+        "{}",
+        text(&out.stderr)
+    );
+}

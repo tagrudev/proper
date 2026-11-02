@@ -4,3 +4,5 @@ pub mod agents;
 pub mod sidebar;
 pub mod view;
 pub mod tui;
+pub mod workspace;
+pub mod hint;
