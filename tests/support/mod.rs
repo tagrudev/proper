@@ -28,6 +28,13 @@ impl Drop for TestServer {
     }
 }
 
+/// True when a captured sidebar marks the line containing `row` as the window on screen.
+pub fn marks_on_screen(screen: &str, row: &str) -> bool {
+    screen
+        .lines()
+        .any(|line| line.contains(row) && line.ends_with('◂'))
+}
+
 /// Polls `condition` every 20ms for up to two seconds.
 pub fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(2);

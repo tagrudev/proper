@@ -1,6 +1,6 @@
 mod support;
 
-use support::{TestServer, wait_until};
+use support::{TestServer, marks_on_screen, wait_until};
 
 #[test]
 fn a_fresh_server_lists_its_single_pane() {
@@ -411,12 +411,12 @@ mod sidebar_screen {
             screen(&t, &home_sidebar.id)
         );
         assert!(
-            wait_until(|| screen(&t, &agent_sidebar.id).contains("▶ ● sleep")),
+            wait_until(|| marks_on_screen(&screen(&t, &agent_sidebar.id), "● sleep")),
             "{}",
             screen(&t, &agent_sidebar.id)
         );
         assert!(
-            screen(&t, &home_sidebar.id).contains("▶"),
+            screen(&t, &home_sidebar.id).contains("◂"),
             "every sidebar marks the window the session shows"
         );
 
@@ -424,11 +424,11 @@ mod sidebar_screen {
             .run(&t.server.argv(["select-window", "-t", "proper:home"]))
             .unwrap();
         assert!(
-            wait_until(|| !screen(&t, &home_sidebar.id).contains("▶")),
+            wait_until(|| !screen(&t, &home_sidebar.id).contains("◂")),
             "{}",
             screen(&t, &home_sidebar.id)
         );
-        assert!(wait_until(|| !screen(&t, &agent_sidebar.id).contains("▶")));
+        assert!(wait_until(|| !screen(&t, &agent_sidebar.id).contains("◂")));
     }
 }
 
@@ -664,7 +664,7 @@ mod dead_agents {
                 .unwrap()
         };
         assert!(
-            wait_until(|| screen().contains("✗ crash") && screen().contains("▶ ● sleep")),
+            wait_until(|| screen().contains("✗ crash") && marks_on_screen(&screen(), "● sleep")),
             "{}",
             screen()
         );
@@ -986,9 +986,10 @@ mod sidebar_mouse_and_speed {
             .iter()
             .find(|p| p.window_name == "home" && p.role == Some(Role::Sidebar))
             .unwrap();
-        assert!(wait_until(
-            || screen(&t, &home_sidebar.id).contains("▶ ● sleep")
-        ));
+        assert!(wait_until(|| marks_on_screen(
+            &screen(&t, &home_sidebar.id),
+            "● sleep"
+        )));
         // let the one second fallback timer pass so it cannot be what refreshes the screen
         std::thread::sleep(Duration::from_millis(1100));
 
@@ -998,7 +999,7 @@ mod sidebar_mouse_and_speed {
 
         assert!(
             within(Duration::from_millis(400), || !screen(&t, &home_sidebar.id)
-                .contains("▶")),
+                .contains("◂")),
             "{}",
             screen(&t, &home_sidebar.id)
         );

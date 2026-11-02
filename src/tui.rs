@@ -46,9 +46,10 @@ impl Sidebar {
             Snapshot::Tree(tree) => tree,
         };
         let mut state = State::new(tree, self.own_pane.clone());
-        let mut refreshed = Instant::now();
+        let started = Instant::now();
+        let mut refreshed = started;
         loop {
-            terminal.draw(|frame| render(frame, &state))?;
+            terminal.draw(|frame| render(frame, &state, started.elapsed()))?;
             let mut refresh_now = refreshed.elapsed() >= REFRESH || changed.take();
             if event::poll(POLL)? {
                 let input = match event::read()? {
