@@ -80,6 +80,7 @@ fn running_proper_without_a_terminal_still_brings_the_server_up() {
         .env("PROPER_CONFIG_DIR", d.path())
         .env("PROPER_SOCKET", &socket)
         .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
         .output()
         .unwrap();
     let server = proper::tmux::Server::new(socket);
@@ -160,6 +161,7 @@ mod with_server {
                 .env("PROPER_CONFIG_DIR", self.config.path())
                 .env("PROPER_SOCKET", self.server.socket())
                 .env_remove("TMUX")
+                .env_remove("TMUX_PANE")
                 .current_dir(cwd)
                 .args(args)
                 .output()
