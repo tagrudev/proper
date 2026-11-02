@@ -29,6 +29,7 @@ const CHANGE_HOOKS: &[&str] = &[
     "after-set-option",
     "pane-died",
     "pane-exited",
+    "window-pane-changed",
 ];
 const SHIPPED_CONF: &str = include_str!("../tmux.conf");
 
@@ -452,6 +453,7 @@ mod tests {
             "after-set-option",
             "pane-died",
             "pane-exited",
+            "window-pane-changed",
         ] {
             let line = format!("set-hook -g {hook} 'wait-for -S {CHANGE_CHANNEL}'");
             assert!(conf.contains(&line), "missing {line} in\n{conf}");

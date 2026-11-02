@@ -39,6 +39,8 @@ pub enum Input {
     Key(KeyEvent),
     Mouse(Mouse),
     Snapshot(Tree),
+    /// Whether the sidebar is the pane that takes keys in its window.
+    Focus(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +76,7 @@ pub struct State {
     mode: Mode,
     error: Option<String>,
     own_pane: Option<String>,
+    focused: bool,
 }
 
 impl State {
@@ -87,6 +90,7 @@ impl State {
             mode: Mode::Normal,
             error: None,
             own_pane,
+            focused: true,
         }
     }
 
@@ -108,6 +112,10 @@ impl State {
 
     pub fn in_tmux(&self) -> bool {
         self.own_pane.is_some()
+    }
+
+    pub fn focused(&self) -> bool {
+        self.focused
     }
 
     pub fn with_error(self, message: impl Into<String>) -> State {
@@ -196,6 +204,7 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
                 None,
             )
         }
+        Input::Focus(focused) => (State { focused, ..state }, None),
         Input::Key(key) => {
             let state = State {
                 error: None,
@@ -447,6 +456,17 @@ mod tests {
         let (state, _) = press(state, KeyCode::Char('j'));
         assert_eq!(state.cursor(), 0);
         assert!(state.rows().is_empty());
+    }
+
+    #[test]
+    fn a_sidebar_starts_focused_and_follows_focus_input() {
+        let state = inside_tmux();
+        assert!(state.focused());
+        let (state, command) = reduce(state, Input::Focus(false));
+        assert_eq!(command, None);
+        assert!(!state.focused());
+        let (state, _) = reduce(state, Input::Focus(true));
+        assert!(state.focused());
     }
 
     #[test]

@@ -41,11 +41,14 @@ impl Sidebar {
     }
 
     fn event_loop(&self, terminal: &mut ratatui::DefaultTerminal, changed: &Changes) -> Result<()> {
-        let tree = match self.snapshot()? {
+        let (tree, focused) = match self.snapshot()? {
             Snapshot::Alone => return Ok(()),
-            Snapshot::Tree(tree) => tree,
+            Snapshot::Tree { tree, focused } => (tree, focused),
         };
-        let mut state = State::new(tree, self.own_pane.clone());
+        let (mut state, _) = reduce(
+            State::new(tree, self.own_pane.clone()),
+            Input::Focus(focused),
+        );
         let started = Instant::now();
         let mut refreshed = started;
         loop {
@@ -83,7 +86,10 @@ impl Sidebar {
             if refresh_now {
                 state = match self.snapshot() {
                     Ok(Snapshot::Alone) => return Ok(()),
-                    Ok(Snapshot::Tree(tree)) => reduce(state, Input::Snapshot(tree)).0,
+                    Ok(Snapshot::Tree { tree, focused }) => {
+                        let (state, _) = reduce(state, Input::Snapshot(tree));
+                        reduce(state, Input::Focus(focused)).0
+                    }
                     Err(err) => state.with_error(err.root_cause().to_string()),
                 };
                 refreshed = Instant::now();
@@ -91,18 +97,25 @@ impl Sidebar {
         }
     }
 
-    /// Inside tmux the tree comes from live panes; outside there are only registered projects.
+    /// Inside tmux the tree comes from live panes; outside there are only registered projects
+    /// and the sidebar always has focus.
     /// A sidebar whose agent is gone reports `Alone` and exits, which closes its window.
     fn snapshot(&self) -> Result<Snapshot> {
         let projects = self.workspace.projects()?;
         let Some(own_pane) = &self.own_pane else {
-            return Ok(Snapshot::Tree(Tree::from_registry(&projects)));
+            return Ok(Snapshot::Tree {
+                tree: Tree::from_registry(&projects),
+                focused: true,
+            });
         };
         let panes = self.workspace.server().list_panes()?;
         if sidebar_is_alone(&panes, own_pane) {
             return Ok(Snapshot::Alone);
         }
-        Ok(Snapshot::Tree(Tree::build(&panes, &projects)))
+        Ok(Snapshot::Tree {
+            tree: Tree::build(&panes, &projects),
+            focused: panes.iter().any(|p| &p.id == own_pane && p.pane_active),
+        })
     }
 
     /// A thread blocked in `tmux wait-for` raises a flag each time a hook fires.
@@ -175,7 +188,11 @@ impl Sidebar {
 }
 
 enum Snapshot {
-    Tree(Tree),
+    /// `focused` is true when the sidebar is the active pane of its window.
+    Tree {
+        tree: Tree,
+        focused: bool,
+    },
     Alone,
 }
 

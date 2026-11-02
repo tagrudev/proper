@@ -39,7 +39,8 @@ everything down for real: `tmux -L proper kill-server`.
 
 Your `~/.tmux.conf` (and `~/.config/tmux/tmux.conf`) are sourced first, so your
 prefix and bindings work. proper then turns the status bar off, enables the
-mouse, keeps crashed panes around and pins the sidebar at 30 columns.
+mouse, keeps crashed panes around, draws every pane border in the same grey
+and pins the sidebar at 30 columns.
 
 An agent that exits cleanly closes its window. One that crashes or is killed
 stays as a dead pane so you can read what happened (`prefix [` scrolls back)
@@ -70,9 +71,10 @@ With the mouse: click an agent row to open it, click a project row to move the
 cursor, and the wheel scrolls the list.
 
 Anywhere: `M-Tab` or `prefix Tab` toggles focus between sidebar and agent. A
-mouse click on the sidebar does the same. `M-Tab` needs your terminal to send
-Option as Meta (iTerm2: "Esc+", Terminal.app: "Use Option as Meta key",
-Ghostty: `macos-option-as-alt`).
+mouse click on the sidebar does the same. The sidebar's cursor row turns grey
+while the sidebar has focus and goes plain when the agent does. `M-Tab` needs
+your terminal to send Option as Meta (iTerm2: "Esc+", Terminal.app: "Use
+Option as Meta key", Ghostty: `macos-option-as-alt`).
 
 Projects with agents are bold, empty ones dim. Agents hang under their
 project as `├ ● name command`; the command shows only when it differs from
@@ -113,9 +115,10 @@ profile.
   `@proper_project` and `@proper_agent` options; that is the only state besides
   `~/.config/proper/projects.toml`.
 - Every sidebar re-reads `tmux list-panes -a` when a tmux hook signals a
-  change (window switch, new or dead pane, options set) and once a second as
-  a fallback, so all of them agree without talking to each other. The hooks
-  signal the `proper-changed` wait-for channel; each sidebar blocks on it.
+  change (window switch, focus moving between panes, new or dead pane,
+  options set) and once a second as a fallback, so all of them agree without
+  talking to each other. The hooks signal the `proper-changed` wait-for
+  channel; each sidebar blocks on it.
 - `proper` heals before attaching: a window that lost its sidebar gets one
   back, a crashed sidebar is respawned, a window left with only a sidebar is
   closed.

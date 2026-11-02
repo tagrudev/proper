@@ -61,7 +61,7 @@ fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>
                 .map(|(index, row)| {
                     let next_is_agent = matches!(rows.get(index + 1), Some(Row::Agent(_)));
                     let line = row_line(row, next_is_agent, area.width, elapsed);
-                    if index == state.cursor() {
+                    if index == state.cursor() && state.focused() {
                         line.bg(CURSOR)
                     } else {
                         line
@@ -219,6 +219,17 @@ mod tests {
         assert_eq!(buffer[(29, 1)].bg, CURSOR, "znaiko row, right edge");
         assert_ne!(buffer[(3, 0)].bg, CURSOR, "project row");
         assert!(!buffer[(3, 1)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn the_cursor_row_is_plain_while_the_sidebar_is_not_focused() {
+        let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
+        let (state, _) = reduce(state, Input::Focus(false));
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, Duration::ZERO))
+            .unwrap();
+        assert_ne!(terminal.backend().buffer()[(3, 0)].bg, CURSOR);
     }
 
     #[test]
