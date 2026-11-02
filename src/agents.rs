@@ -103,6 +103,19 @@ impl Tree {
     }
 }
 
+/// True when `own_pane` is a sidebar whose window holds nothing but sidebars: its agent
+/// or hint is gone, so the sidebar has nothing left to sit next to.
+pub fn sidebar_is_alone(panes: &[Pane], own_pane: &str) -> bool {
+    let Some(me) = panes.iter().find(|p| p.id == own_pane) else {
+        return false;
+    };
+    me.role == Some(Role::Sidebar)
+        && panes
+            .iter()
+            .filter(|p| p.window_id == me.window_id && p.id != me.id)
+            .all(|p| p.role == Some(Role::Sidebar))
+}
+
 /// `base`, or `base-2`, `base-3`, ... when earlier names are taken.
 pub fn unique_name(base: &str, taken: &[&str]) -> String {
     if !taken.contains(&base) {
@@ -206,6 +219,44 @@ mod tests {
         assert_eq!(tree.agent("project", "zsh").unwrap().pane_id, "%3");
         assert!(tree.agent("project", "nope").is_none());
         assert!(tree.agent("nope", "zsh").is_none());
+    }
+
+    #[test]
+    fn a_sidebar_is_alone_when_its_window_has_no_other_kind_of_pane() {
+        let mut panes = panes();
+        assert!(!sidebar_is_alone(&panes, "%1"), "home has a hint pane");
+        panes.retain(|p| p.id != "%0");
+        assert!(sidebar_is_alone(&panes, "%1"));
+        assert!(
+            !sidebar_is_alone(&panes, "%2"),
+            "an agent pane is never alone in this sense"
+        );
+        assert!(!sidebar_is_alone(&panes, "%99"), "unknown pane");
+    }
+
+    #[test]
+    fn a_sidebar_next_to_an_unmarked_pane_is_not_alone() {
+        let mut panes = panes();
+        panes.retain(|p| p.id != "%0");
+        panes.push(Pane {
+            id: "%7".into(),
+            window_id: "@0".into(),
+            window_name: "home".into(),
+            window_active: true,
+            pane_active: true,
+            dead: None,
+            command: "sleep".into(),
+            path: String::new(),
+            width: 80,
+            index: 2,
+            role: None,
+            project: String::new(),
+            agent: String::new(),
+        });
+        assert!(
+            !sidebar_is_alone(&panes, "%1"),
+            "a pane whose options are not set yet still counts"
+        );
     }
 
     #[test]

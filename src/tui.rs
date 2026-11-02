@@ -13,7 +13,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 
-use crate::agents::Tree;
+use crate::agents::{Tree, sidebar_is_alone};
 use crate::config::Project;
 use crate::sidebar::{Command, Input, Mouse, Program, State, reduce};
 use crate::view::render;
@@ -41,7 +41,11 @@ impl Sidebar {
     }
 
     fn event_loop(&self, terminal: &mut ratatui::DefaultTerminal, changed: &Changes) -> Result<()> {
-        let mut state = State::new(self.snapshot()?, self.own_pane.clone());
+        let tree = match self.snapshot()? {
+            Snapshot::Alone => return Ok(()),
+            Snapshot::Tree(tree) => tree,
+        };
+        let mut state = State::new(tree, self.own_pane.clone());
         let mut refreshed = Instant::now();
         loop {
             terminal.draw(|frame| render(frame, &state))?;
@@ -77,7 +81,8 @@ impl Sidebar {
             }
             if refresh_now {
                 state = match self.snapshot() {
-                    Ok(tree) => reduce(state, Input::Snapshot(tree)).0,
+                    Ok(Snapshot::Alone) => return Ok(()),
+                    Ok(Snapshot::Tree(tree)) => reduce(state, Input::Snapshot(tree)).0,
                     Err(err) => state.with_error(err.root_cause().to_string()),
                 };
                 refreshed = Instant::now();
@@ -86,11 +91,17 @@ impl Sidebar {
     }
 
     /// Inside tmux the tree comes from live panes; outside there are only registered projects.
-    fn snapshot(&self) -> Result<Tree> {
-        match self.own_pane {
-            Some(_) => self.workspace.tree(),
-            None => Ok(Tree::from_registry(&self.workspace.projects()?)),
+    /// A sidebar whose agent is gone reports `Alone` and exits, which closes its window.
+    fn snapshot(&self) -> Result<Snapshot> {
+        let projects = self.workspace.projects()?;
+        let Some(own_pane) = &self.own_pane else {
+            return Ok(Snapshot::Tree(Tree::from_registry(&projects)));
+        };
+        let panes = self.workspace.server().list_panes()?;
+        if sidebar_is_alone(&panes, own_pane) {
+            return Ok(Snapshot::Alone);
         }
+        Ok(Snapshot::Tree(Tree::build(&panes, &projects)))
     }
 
     /// A thread blocked in `tmux wait-for` raises a flag each time a hook fires.
@@ -160,6 +171,11 @@ impl Sidebar {
             }
         }
     }
+}
+
+enum Snapshot {
+    Tree(Tree),
+    Alone,
 }
 
 struct Changes {

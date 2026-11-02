@@ -39,7 +39,17 @@ everything down for real: `tmux -L proper kill-server`.
 
 Your `~/.tmux.conf` (and `~/.config/tmux/tmux.conf`) are sourced first, so your
 prefix and bindings work. proper then turns the status bar off, enables the
-mouse, keeps dead panes around and pins the sidebar at 30 columns.
+mouse, keeps crashed panes around and pins the sidebar at 30 columns.
+
+An agent that exits cleanly closes its window. One that crashes or is killed
+stays as a dead pane so you can read what happened (`prefix [` scrolls back)
+and press `r` to restart it.
+
+Inside an agent pane `TMUX` is empty, so `tmux` and tools built on it, such as
+tmuxinator, talk to your default server exactly as they would from a plain
+terminal. A tmuxinator project started from inside proper therefore attaches
+nested inside that pane rather than taking over proper's session. Run it from
+a separate terminal tab if you want it full size.
 
 ## Keys
 
@@ -65,7 +75,7 @@ Option as Meta (iTerm2: "Esc+", Terminal.app: "Use Option as Meta key",
 Ghostty: `macos-option-as-alt`).
 
 Rows read `● name command` for a running agent and `✗ name exit 3` (or
-`signal kill`) for one that stopped. `▶` marks the agent whose window is on
+`signal kill`) for one that crashed. `▶` marks the agent whose window is on
 screen. A project shown dim with `*` has agents but is no longer in
 `projects.toml`.
 

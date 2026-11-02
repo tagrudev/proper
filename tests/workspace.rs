@@ -1004,3 +1004,153 @@ mod sidebar_mouse_and_speed {
         );
     }
 }
+
+mod agent_environment_and_exit {
+    use super::*;
+    use proper::config::{Project, Projects};
+    use proper::tmux::{Death, Role};
+    use proper::workspace::Workspace;
+
+    fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &path).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        let ws = Workspace::new(
+            t.server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        (ws, config, project)
+    }
+
+    fn screen(t: &TestServer, pane: &str) -> String {
+        t.server
+            .run(&t.server.argv(["capture-pane", "-p", "-S", "-", "-t", pane]))
+            .unwrap()
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["sh".to_string(), "-c".to_string(), script.to_string()]
+    }
+
+    #[test]
+    fn agents_see_no_tmux_variable_so_tmux_inside_them_uses_the_default_server() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(
+                &project,
+                None,
+                &sh("echo \"TMUX=[$TMUX] PANE=[$TMUX_PANE]\"; sleep 1000"),
+            )
+            .unwrap();
+        assert!(
+            wait_until(|| screen(&t, &agent.pane_id).contains("TMUX=[] PANE=[%")),
+            "{}",
+            screen(&t, &agent.pane_id)
+        );
+    }
+
+    #[test]
+    fn a_respawned_agent_still_sees_no_tmux_variable() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, None, &sh("echo \"TMUX=[$TMUX]\"; exit 3"))
+            .unwrap();
+        assert!(wait_until(|| t.server.list_panes().unwrap().iter().any(
+            |p| p.id == agent.pane_id && p.dead == Some(Death::Exit(3))
+        )));
+        t.server
+            .run(&t.server.argv(["clear-history", "-t", &agent.pane_id]))
+            .unwrap();
+
+        ws.respawn(&agent.pane_id).unwrap();
+
+        assert!(wait_until(|| t.server.list_panes().unwrap().iter().any(
+            |p| p.id == agent.pane_id && p.dead == Some(Death::Exit(3))
+        )));
+        assert!(
+            screen(&t, &agent.pane_id).contains("TMUX=[]"),
+            "{}",
+            screen(&t, &agent.pane_id)
+        );
+    }
+
+    #[test]
+    fn a_clean_exit_closes_the_whole_window_and_a_crash_keeps_it() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let crash = ws
+            .new_agent(&project, Some("crash"), &sh("exit 3"))
+            .unwrap();
+        let clean = ws
+            .new_agent(&project, Some("clean"), &sh("sleep 0.3; exit 0"))
+            .unwrap();
+
+        assert!(wait_until(|| t
+            .server
+            .list_panes()
+            .unwrap()
+            .iter()
+            .all(|p| p.window_id != clean.window_id)));
+        let panes = t.server.list_panes().unwrap();
+        assert!(
+            panes
+                .iter()
+                .any(|p| p.id == crash.pane_id && p.dead == Some(Death::Exit(3))),
+            "crash stays"
+        );
+        assert!(
+            panes
+                .iter()
+                .any(|p| p.window_id == crash.window_id && p.role == Some(Role::Sidebar)),
+            "with its sidebar"
+        );
+        assert_eq!(
+            panes.len(),
+            4,
+            "home window and the crashed agent's window remain"
+        );
+    }
+
+    #[test]
+    fn a_killed_sidebar_stays_dead_for_heal_to_respawn() {
+        let t = TestServer::start();
+        let (ws, _config, _project) = up(&t);
+        let panes = t.server.list_panes().unwrap();
+        let sidebar = panes
+            .iter()
+            .find(|p| p.role == Some(Role::Sidebar))
+            .unwrap();
+        let pid = t
+            .server
+            .run(
+                &t.server
+                    .argv(["display-message", "-p", "-t", &sidebar.id, "#{pane_pid}"]),
+            )
+            .unwrap();
+        std::process::Command::new("kill")
+            .args(["-9", pid.trim()])
+            .status()
+            .unwrap();
+
+        assert!(wait_until(|| t
+            .server
+            .list_panes()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == sidebar.id && p.dead.is_some())));
+        ws.heal().unwrap();
+        assert!(wait_until(|| t
+            .server
+            .list_panes()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == sidebar.id && p.dead.is_none())));
+    }
+}

@@ -175,16 +175,18 @@ fn workspace(config_dir: PathBuf) -> Result<Workspace> {
 /// Brings the proper server up if needed and attaches this terminal to it.
 fn open(config_dir: PathBuf) -> Result<()> {
     let server = Server::from_env();
-    match std::env::var("TMUX") {
-        Ok(tmux) if socket_name(&tmux).as_deref() == Some(server.socket()) => {
-            Workspace::new(server, config_dir, std::env::current_exe()?).heal()?;
+    let workspace = Workspace::new(server, config_dir, std::env::current_exe()?);
+    match where_am_i(workspace.server()) {
+        Place::InsideProper => {
+            workspace.heal()?;
             println!("already inside proper");
             return Ok(());
         }
-        Ok(_) => anyhow::bail!("run proper from a plain terminal, not inside another tmux"),
-        Err(_) => {}
+        Place::InsideOtherTmux => {
+            anyhow::bail!("run proper from a plain terminal, not inside another tmux")
+        }
+        Place::PlainTerminal => {}
     }
-    let workspace = Workspace::new(server, config_dir, std::env::current_exe()?);
     if workspace.is_running()? {
         workspace.heal()?;
     } else {
@@ -192,4 +194,27 @@ fn open(config_dir: PathBuf) -> Result<()> {
     }
     workspace.attach()?;
     Ok(())
+}
+
+enum Place {
+    InsideProper,
+    InsideOtherTmux,
+    PlainTerminal,
+}
+
+/// Sidebar panes carry TMUX pointing at proper's socket; agent panes have TMUX cleared
+/// but still inherit TMUX_PANE and PROPER_SOCKET from the session.
+fn where_am_i(server: &Server) -> Place {
+    let tmux = std::env::var("TMUX").unwrap_or_default();
+    let in_pane = std::env::var_os("TMUX_PANE").is_some();
+    let socket_env = std::env::var("PROPER_SOCKET").ok();
+    if socket_name(&tmux).as_deref() == Some(server.socket()) {
+        Place::InsideProper
+    } else if !tmux.is_empty() {
+        Place::InsideOtherTmux
+    } else if in_pane && socket_env.as_deref() == Some(server.socket()) {
+        Place::InsideProper
+    } else {
+        Place::PlainTerminal
+    }
 }

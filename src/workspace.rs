@@ -198,6 +198,8 @@ impl Workspace {
 
         let window = format!("{}/{name}", project.name);
         let path = project.path.display().to_string();
+        // An empty TMUX makes tmux inside the agent talk to the user's default server,
+        // so tmuxinator and friends never hijack proper's own session.
         let mut argv = vec![
             "new-window",
             "-t",
@@ -206,6 +208,8 @@ impl Workspace {
             &path,
             "-n",
             &window,
+            "-e",
+            "TMUX=",
             "-P",
             "-F",
             "#{pane_id}\t#{window_id}",
@@ -330,8 +334,11 @@ impl Workspace {
     /// Runs a dead pane's original command again in the same pane. No hook fires for
     /// a respawn, so sidebars are woken explicitly.
     pub fn respawn(&self, pane_id: &str) -> Result<()> {
-        self.server
-            .run(&self.server.argv(["respawn-pane", "-t", pane_id]))?;
+        self.server.run(
+            &self
+                .server
+                .argv(["respawn-pane", "-e", "TMUX=", "-t", pane_id]),
+        )?;
         self.signal_change()
     }
 
@@ -376,7 +383,8 @@ mod tests {
             conf.contains(&format!("set -g main-pane-width {SIDEBAR_WIDTH}")),
             "{conf}"
         );
-        assert!(conf.contains("remain-on-exit on"), "{conf}");
+        assert!(conf.contains("set -g remain-on-exit failed"), "{conf}");
+        assert!(!conf.contains("remain-on-exit on"), "{conf}");
         assert!(conf.contains("window-resized"), "{conf}");
     }
 

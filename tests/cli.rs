@@ -278,6 +278,24 @@ mod with_server {
     }
 
     #[test]
+    fn proper_run_from_inside_an_agent_pane_knows_it_is_already_inside() {
+        let up = Up::start();
+        let out = Command::new(env!("CARGO_BIN_EXE_proper"))
+            .env("PROPER_CONFIG_DIR", up.config.path())
+            .env("PROPER_SOCKET", up.server.socket())
+            .env_remove("TMUX")
+            .env("TMUX_PANE", "%0")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        assert!(
+            text(&out.stdout).contains("already inside proper"),
+            "{}",
+            text(&out.stdout)
+        );
+    }
+
+    #[test]
     fn rm_refuses_while_agents_live_and_works_after_they_are_killed() {
         let up = Up::start();
         let home = up.config.path();
