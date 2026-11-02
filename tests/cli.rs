@@ -305,3 +305,36 @@ mod with_server {
         );
     }
 }
+
+#[test]
+fn new_brings_the_server_up_when_it_is_not_running() {
+    let d = tempfile::tempdir().unwrap();
+    let project_dir = d.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    let socket = format!("proper-cli-cold-{}", std::process::id());
+    let server = proper::tmux::Server::new(socket.clone());
+    assert!(server.list_panes().is_err(), "nothing is running yet");
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_proper"))
+            .env("PROPER_CONFIG_DIR", d.path())
+            .env("PROPER_SOCKET", &socket)
+            .env_remove("TMUX")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(
+        run(&["add", project_dir.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let out = run(&["new", "project", "--", "sleep", "1000"]);
+    let panes = server.list_panes();
+    let _ = server.run(&server.argv(["kill-server"]));
+
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let panes = panes.unwrap();
+    assert!(panes.iter().any(|p| p.window_name == "home"));
+    assert!(panes.iter().any(|p| p.window_name == "project/sleep"));
+}

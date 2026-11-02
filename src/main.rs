@@ -81,6 +81,9 @@ fn run(cli: Cli) -> Result<()> {
             command,
         }) => {
             let workspace = workspace(config_dir)?;
+            if !workspace.is_running()? {
+                workspace.bootstrap(dirs::home_dir().as_deref())?;
+            }
             let projects = workspace.projects()?;
             let project = match project {
                 Some(name) => projects.get(&name).with_context(|| format!("no project named {name}"))?,
