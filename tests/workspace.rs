@@ -332,3 +332,76 @@ mod agents {
         assert!(panes.iter().all(|p| p.window_name == "home"));
     }
 }
+
+mod sidebar_screen {
+    use super::*;
+    use proper::config::{Project, Projects};
+    use proper::tmux::Role;
+    use proper::workspace::Workspace;
+
+    fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &path).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        let ws = Workspace::new(
+            t.server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        (ws, config, project)
+    }
+
+    fn screen(t: &TestServer, pane: &str) -> String {
+        t.server
+            .run(&t.server.argv(["capture-pane", "-p", "-t", pane]))
+            .unwrap()
+    }
+
+    #[test]
+    fn the_sidebar_in_the_home_window_lists_a_running_agent() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+
+        let panes = t.server.list_panes().unwrap();
+        let home_sidebar = panes
+            .iter()
+            .find(|p| p.window_name == "home" && p.role == Some(Role::Sidebar))
+            .unwrap();
+        let agent_sidebar = panes
+            .iter()
+            .find(|p| p.window_id == agent.window_id && p.role == Some(Role::Sidebar))
+            .unwrap();
+
+        assert!(
+            wait_until(|| screen(&t, &home_sidebar.id).contains("● sleep")),
+            "{}",
+            screen(&t, &home_sidebar.id)
+        );
+        assert!(
+            wait_until(|| screen(&t, &agent_sidebar.id).contains("▶ ● sleep")),
+            "{}",
+            screen(&t, &agent_sidebar.id)
+        );
+        assert!(
+            screen(&t, &home_sidebar.id).contains("▶"),
+            "every sidebar marks the window the session shows"
+        );
+
+        t.server
+            .run(&t.server.argv(["select-window", "-t", "proper:home"]))
+            .unwrap();
+        assert!(
+            wait_until(|| !screen(&t, &home_sidebar.id).contains("▶")),
+            "{}",
+            screen(&t, &home_sidebar.id)
+        );
+        assert!(wait_until(|| !screen(&t, &agent_sidebar.id).contains("▶")));
+    }
+}

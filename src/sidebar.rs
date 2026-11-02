@@ -106,11 +106,24 @@ fn rows(tree: Tree) -> Vec<Row> {
         .collect()
 }
 
+/// Rows keep their identity across snapshots by project name or agent pane.
+fn same_row(a: &Row, b: &Row) -> bool {
+    match (a, b) {
+        (Row::Project(a), Row::Project(b)) => a.name == b.name,
+        (Row::Agent(a), Row::Agent(b)) => a.pane_id == b.pane_id,
+        _ => false,
+    }
+}
+
 pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
     match input {
         Input::Snapshot(tree) => {
             let rows = rows(tree);
-            let cursor = state.cursor.min(rows.len().saturating_sub(1));
+            let cursor = state
+                .rows
+                .get(state.cursor)
+                .and_then(|current| rows.iter().position(|row| same_row(row, current)))
+                .unwrap_or(state.cursor.min(rows.len().saturating_sub(1)));
             (
                 State {
                     rows,
@@ -281,5 +294,121 @@ mod tests {
         assert_eq!(state.error(), Some("tmux said no"));
         let (state, _) = press(state, KeyCode::Char('j'));
         assert_eq!(state.error(), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    use crate::agents::{Agent, ProjectEntry};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn agent(project: &str, name: &str, pane: &str) -> Agent {
+        Agent {
+            name: name.into(),
+            project: project.into(),
+            pane_id: pane.into(),
+            window_id: format!("@{}", &pane[1..]),
+            current: false,
+            dead: None,
+            command: "node".into(),
+        }
+    }
+
+    fn project(name: &str, agents: Vec<Agent>) -> ProjectEntry {
+        ProjectEntry {
+            name: name.into(),
+            path: PathBuf::from(format!("/p/{name}")),
+            registered: true,
+            agents,
+        }
+    }
+
+    fn press(state: State, code: KeyCode) -> State {
+        reduce(state, Input::Key(KeyEvent::new(code, KeyModifiers::NONE))).0
+    }
+
+    fn tree() -> Tree {
+        Tree {
+            projects: vec![
+                project(
+                    "project",
+                    vec![
+                        agent("project", "claude", "%2"),
+                        agent("project", "zsh", "%3"),
+                    ],
+                ),
+                project("znaiko", vec![]),
+            ],
+        }
+    }
+
+    #[test]
+    fn agents_are_rows_right_under_their_project() {
+        let state = State::new(tree(), Some("%1".into()));
+        let rows = state.rows();
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(&rows[1], Row::Agent(a) if a.name == "claude"));
+        assert!(matches!(&rows[2], Row::Agent(a) if a.name == "zsh"));
+        assert!(matches!(&rows[3], Row::Project(p) if p.name == "znaiko"));
+    }
+
+    #[test]
+    fn the_cursor_follows_an_agent_when_rows_shift() {
+        let state = press(
+            press(State::new(tree(), Some("%1".into())), KeyCode::Char('j')),
+            KeyCode::Char('j'),
+        );
+        assert!(matches!(&state.rows()[state.cursor()], Row::Agent(a) if a.pane_id == "%3"));
+
+        let shifted = Tree {
+            projects: vec![
+                project("alpha", vec![agent("alpha", "claude", "%9")]),
+                project(
+                    "project",
+                    vec![
+                        agent("project", "claude", "%2"),
+                        agent("project", "zsh", "%3"),
+                    ],
+                ),
+            ],
+        };
+        let (state, _) = reduce(state, Input::Snapshot(shifted));
+        assert!(matches!(&state.rows()[state.cursor()], Row::Agent(a) if a.pane_id == "%3"));
+    }
+
+    #[test]
+    fn the_cursor_follows_a_project_when_rows_shift() {
+        let state = press(
+            press(
+                press(State::new(tree(), Some("%1".into())), KeyCode::Char('j')),
+                KeyCode::Char('j'),
+            ),
+            KeyCode::Char('j'),
+        );
+        assert!(matches!(&state.rows()[state.cursor()], Row::Project(p) if p.name == "znaiko"));
+        let (state, _) = reduce(
+            state,
+            Input::Snapshot(Tree {
+                projects: vec![project("znaiko", vec![]), project("project", vec![])],
+            }),
+        );
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn a_vanished_row_leaves_the_cursor_clamped_in_place() {
+        let state = press(
+            press(State::new(tree(), Some("%1".into())), KeyCode::Char('j')),
+            KeyCode::Char('j'),
+        );
+        let (state, _) = reduce(
+            state,
+            Input::Snapshot(Tree {
+                projects: vec![project("project", vec![])],
+            }),
+        );
+        assert_eq!(state.cursor(), 0);
     }
 }

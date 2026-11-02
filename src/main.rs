@@ -121,12 +121,9 @@ fn run(cli: Cli) -> Result<()> {
             println!("removed {} ({})", removed.name, removed.path.display());
             Ok(())
         }
-        Some(Command::Sidebar) => Sidebar {
-            server: Server::from_env(),
-            config_dir,
-            own_pane: std::env::var("TMUX_PANE").ok(),
+        Some(Command::Sidebar) => {
+            Sidebar { workspace: workspace(config_dir)?, own_pane: std::env::var("TMUX_PANE").ok() }.run()
         }
-        .run(),
         Some(Command::Hint) => proper::hint::run(),
         None => open(config_dir),
     }

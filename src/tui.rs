@@ -1,23 +1,21 @@
 //! The sidebar process: draws, reads keys, refreshes from tmux once a second.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use crate::agents::Tree;
-use crate::config::Projects;
 use crate::sidebar::{Command, Input, State, reduce};
-use crate::tmux::Server;
 use crate::view::render;
+use crate::workspace::Workspace;
 
 const POLL: Duration = Duration::from_millis(250);
 const REFRESH: Duration = Duration::from_secs(1);
 
 pub struct Sidebar {
-    pub server: Server,
-    pub config_dir: PathBuf,
+    pub workspace: Workspace,
+    /// This sidebar's own pane id; `None` when running outside tmux.
     pub own_pane: Option<String>,
 }
 
@@ -62,15 +60,19 @@ impl Sidebar {
         }
     }
 
+    /// Inside tmux the tree comes from live panes; outside there are only registered projects.
     fn snapshot(&self) -> Result<Tree> {
-        Ok(Tree::from_registry(&Projects::load(&self.config_dir)?))
+        match self.own_pane {
+            Some(_) => self.workspace.tree(),
+            None => Ok(Tree::from_registry(&self.workspace.projects()?)),
+        }
     }
 
     fn execute(&self, command: &Command) -> Result<Flow> {
         match command {
             Command::Quit => Ok(Flow::Exit),
             Command::Detach => {
-                self.server.run(&self.server.argv(["detach-client"]))?;
+                self.workspace.detach()?;
                 Ok(Flow::Continue)
             }
         }

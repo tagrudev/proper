@@ -8,6 +8,8 @@ use ratatui::widgets::Paragraph;
 
 use crate::sidebar::{Mode, Row, State};
 
+const AGENT_NAME_WIDTH: usize = 11;
+
 const HELP: &[&str] = &[
     " j/k   move",
     " Enter open agent",
@@ -57,10 +59,20 @@ fn row_line(row: &Row, selected: bool, width: u16) -> Line<'static> {
             (format!(" ▾ {}", project.name), Style::new())
         }
         Row::Project(project) => (format!(" ▾ {}*", project.name), Style::new().dim()),
-        Row::Agent(agent) => (
-            format!("   ● {}  {}", agent.name, agent.command),
-            Style::new(),
-        ),
+        Row::Agent(agent) => {
+            let marker = if agent.current { "▶" } else { " " };
+            let (glyph, detail) = match agent.dead {
+                Some(status) => ("✗", format!("exit {status}")),
+                None => ("●", agent.command.clone()),
+            };
+            (
+                format!(
+                    " {marker} {glyph} {:<AGENT_NAME_WIDTH$} {detail}",
+                    agent.name
+                ),
+                Style::new(),
+            )
+        }
     };
     let padded = format!("{text:<width$}", width = width as usize);
     let style = if selected {
@@ -177,5 +189,68 @@ mod tests {
     fn empty_registry_explains_how_to_add_a_project() {
         let state = State::new(tree(&[]), None);
         assert!(lines(&state).join("\n").contains("proper add"));
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    use crate::agents::{Agent, ProjectEntry, Tree};
+    use crate::sidebar::State;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::path::PathBuf;
+
+    fn agent(name: &str, current: bool, dead: Option<i32>) -> Agent {
+        Agent {
+            name: name.into(),
+            project: "project".into(),
+            pane_id: "%2".into(),
+            window_id: "@1".into(),
+            current,
+            dead,
+            command: "node".into(),
+        }
+    }
+
+    fn lines(state: &State) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        terminal.draw(|frame| render(frame, state)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agent_rows_show_state_glyph_name_and_command_or_exit_status() {
+        let tree = Tree {
+            projects: vec![
+                ProjectEntry {
+                    name: "project".into(),
+                    path: PathBuf::from("/p/project"),
+                    registered: true,
+                    agents: vec![agent("claude", true, None), agent("zsh", false, Some(3))],
+                },
+                ProjectEntry {
+                    name: "old".into(),
+                    path: PathBuf::from("/p/old"),
+                    registered: false,
+                    agents: vec![agent("claude", false, None)],
+                },
+            ],
+        };
+        let out = lines(&State::new(tree, Some("%1".into())));
+        assert_eq!(out[1], " ▾ project");
+        assert_eq!(out[2], " ▶ ● claude      node");
+        assert_eq!(out[3], "   ✗ zsh         exit 3");
+        assert_eq!(out[4], " ▾ old*");
+        assert_eq!(out[5], "   ● claude      node");
     }
 }

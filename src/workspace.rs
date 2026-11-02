@@ -171,6 +171,12 @@ impl Workspace {
         })
     }
 
+    /// Detaches the client this process runs under; the server and its agents live on.
+    pub fn detach(&self) -> Result<()> {
+        self.server.run(&self.server.argv(["detach-client"]))?;
+        Ok(())
+    }
+
     /// Closes an agent's window, sidebar included.
     pub fn kill(&self, window_id: &str) -> Result<()> {
         self.server.run(&self.server.argv(["kill-window", "-t", window_id]))?;
