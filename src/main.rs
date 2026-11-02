@@ -4,6 +4,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use proper::config::{self, Projects};
+use proper::tmux::Server;
+use proper::tui::Sidebar;
 
 #[derive(Parser)]
 #[command(name = "proper", version, about = "A tmux workspace for you and your coding agents")]
@@ -22,6 +24,9 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Run the sidebar pane (started by proper itself)
+    #[command(hide = true)]
+    Sidebar,
 }
 
 fn main() -> ExitCode {
@@ -45,6 +50,12 @@ fn run(cli: Cli) -> Result<()> {
             println!("added {} -> {}", added.name, added.path.display());
             projects.save(&config_dir)
         }
+        Some(Command::Sidebar) => Sidebar {
+            server: Server::from_env(),
+            config_dir,
+            own_pane: std::env::var("TMUX_PANE").ok(),
+        }
+        .run(),
         None => anyhow::bail!("nothing to do yet"),
     }
 }

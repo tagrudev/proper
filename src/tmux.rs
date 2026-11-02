@@ -101,6 +101,13 @@ fn parse_pane(line: &str) -> Result<Pane> {
     })
 }
 
+/// The socket name inside a `$TMUX` value such as `/tmp/tmux-501/proper,123,0`.
+pub fn socket_name(tmux_env: &str) -> Option<String> {
+    let path = tmux_env.split(',').next()?;
+    let name = std::path::Path::new(path).file_name()?;
+    Some(name.to_string_lossy().into_owned())
+}
+
 /// A tmux server addressed by socket name (`tmux -L <socket>`).
 #[derive(Debug, Clone)]
 pub struct Server {
@@ -112,6 +119,20 @@ impl Server {
         Server {
             socket: socket.into(),
         }
+    }
+
+    /// `PROPER_SOCKET`, else the socket of the tmux server this process runs inside,
+    /// else the default `proper` socket.
+    pub fn from_env() -> Server {
+        let socket = std::env::var("PROPER_SOCKET")
+            .ok()
+            .or_else(|| {
+                std::env::var("TMUX")
+                    .ok()
+                    .and_then(|tmux| socket_name(&tmux))
+            })
+            .unwrap_or_else(|| "proper".to_string());
+        Server::new(socket)
     }
 
     pub fn socket(&self) -> &str {
@@ -141,11 +162,13 @@ impl Server {
             .output()
             .with_context(|| format!("failed to spawn {}", argv.join(" ")))?;
         if !output.status.success() {
-            return Err(anyhow!(
-                "{} failed: {}",
-                argv.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let cause = if stderr.is_empty() {
+                format!("exit status {}", output.status)
+            } else {
+                stderr
+            };
+            return Err(anyhow!(cause).context(format!("{} failed", argv.join(" "))));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
@@ -243,6 +266,19 @@ mod tests {
                 PANE_FORMAT
             ]
         );
+    }
+
+    #[test]
+    fn socket_name_comes_from_the_tmux_variable() {
+        assert_eq!(
+            socket_name("/private/tmp/tmux-501/proper,4242,0"),
+            Some("proper".into())
+        );
+        assert_eq!(
+            socket_name("/tmp/tmux-501/proper-test-1-2,1,0"),
+            Some("proper-test-1-2".into())
+        );
+        assert_eq!(socket_name(""), None);
     }
 
     #[test]

@@ -36,6 +36,10 @@ fn dropping_the_test_server_kills_it() {
 #[test]
 fn a_server_that_is_not_running_is_an_error() {
     let t = TestServer::start();
-    let err = t.server.list_panes().unwrap_err().to_string();
-    assert!(err.contains(t.server.socket()), "{err}");
+    let err = t.server.list_panes().unwrap_err();
+    let full = format!("{err:#}");
+    assert!(full.contains("list-panes"), "{full}");
+    let root = err.root_cause().to_string();
+    assert!(root.contains(t.server.socket()), "{root}");
+    assert!(!root.contains("list-panes"), "root cause is tmux's own message: {root}");
 }
