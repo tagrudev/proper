@@ -92,7 +92,7 @@ session. Wire it to Claude Code hooks in `~/.claude/settings.json`:
 "hooks": {
   "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "proper status working" }] }],
   "Stop":             [{ "hooks": [{ "type": "command", "command": "proper status waiting" }] }],
-  "Notification":     [{ "matcher": "permission_prompt|elicitation_dialog",
+  "Notification":     [{ "matcher": "permission_prompt|elicitation_dialog|agent_needs_input",
                          "hooks": [{ "type": "command", "command": "proper status attention" }] }]
 }
 ```
