@@ -319,7 +319,7 @@ mod with_server {
         assert!(
             !fs::read_to_string(home.join("projects.toml"))
                 .unwrap()
-                .contains("project")
+                .contains("name = \"project\"")
         );
     }
 }
