@@ -221,6 +221,23 @@ mod bootstrap {
     }
 
     #[test]
+    fn active_and_inactive_pane_borders_look_alike() {
+        let t = TestServer::start();
+        let (ws, _config) = workspace(&t);
+        ws.bootstrap(None).unwrap();
+
+        let option = |name: &str| {
+            t.server
+                .run(&t.server.argv(["show-options", "-gv", name]))
+                .unwrap()
+        };
+        assert_eq!(
+            option("pane-active-border-style"),
+            option("pane-border-style")
+        );
+    }
+
+    #[test]
     fn bootstrapping_twice_is_an_error_rather_than_a_second_session() {
         let t = TestServer::start();
         let (ws, _config) = workspace(&t);
@@ -900,6 +917,54 @@ mod sidebar_mouse_and_speed {
             std::thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    #[test]
+    fn the_cursor_row_shows_only_while_the_sidebar_is_the_active_pane() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        let panes = t.server.list_panes().unwrap();
+        let sidebar = panes
+            .iter()
+            .find(|p| p.window_id == agent.window_id && p.role == Some(Role::Sidebar))
+            .unwrap();
+        let styled = || {
+            t.server
+                .run(
+                    &t.server
+                        .argv(["capture-pane", "-e", "-p", "-t", &sidebar.id]),
+                )
+                .unwrap()
+        };
+        let cursor_background = "48;5;237";
+        assert!(wait_until(|| screen(&t, &sidebar.id).contains("● sleep")));
+        assert!(!styled().contains(cursor_background), "{}", styled());
+
+        // let the one second fallback timer pass so it cannot be what refreshes the screen
+        std::thread::sleep(Duration::from_millis(1100));
+        t.server
+            .run(&t.server.argv(["select-pane", "-t", &sidebar.id]))
+            .unwrap();
+        assert!(
+            within(Duration::from_millis(400), || styled()
+                .contains(cursor_background)),
+            "{}",
+            styled()
+        );
+
+        std::thread::sleep(Duration::from_millis(1100));
+        t.server
+            .run(&t.server.argv(["select-pane", "-t", &agent.pane_id]))
+            .unwrap();
+        assert!(
+            within(Duration::from_millis(400), || !styled()
+                .contains(cursor_background)),
+            "{}",
+            styled()
+        );
     }
 
     #[test]
