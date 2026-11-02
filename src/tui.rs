@@ -1,19 +1,25 @@
-//! The sidebar process: draws, reads keys, refreshes from tmux once a second.
+//! The sidebar process: draws, reads keys and clicks, refreshes from tmux when
+//! a hook says something changed and once a second regardless.
 
+use std::io::stdout;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
-
-use anyhow::bail;
+use anyhow::{Result, bail};
+use ratatui::crossterm::event::{
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
+    KeyEventKind, MouseButton, MouseEventKind,
+};
+use ratatui::crossterm::execute;
 
 use crate::agents::Tree;
 use crate::config::Project;
-use crate::sidebar::{Command, Input, Program, State, reduce};
+use crate::sidebar::{Command, Input, Mouse, Program, State, reduce};
 use crate::view::render;
 use crate::workspace::Workspace;
 
-const POLL: Duration = Duration::from_millis(250);
+const POLL: Duration = Duration::from_millis(50);
 const REFRESH: Duration = Duration::from_secs(1);
 
 pub struct Sidebar {
@@ -25,32 +31,48 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn run(&self) -> Result<()> {
         let mut terminal = ratatui::init();
-        let result = self.event_loop(&mut terminal);
+        let _ = execute!(stdout(), EnableMouseCapture, EnableFocusChange);
+        let changed = self.watch_changes();
+        let result = self.event_loop(&mut terminal, &changed);
+        let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange);
         ratatui::restore();
+        changed.stop();
         result
     }
 
-    fn event_loop(&self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    fn event_loop(&self, terminal: &mut ratatui::DefaultTerminal, changed: &Changes) -> Result<()> {
         let mut state = State::new(self.snapshot()?, self.own_pane.clone());
         let mut refreshed = Instant::now();
         loop {
             terminal.draw(|frame| render(frame, &state))?;
-            let mut refresh_now = refreshed.elapsed() >= REFRESH;
+            let mut refresh_now = refreshed.elapsed() >= REFRESH || changed.take();
             if event::poll(POLL)? {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        let (next, command) = reduce(state, Input::Key(key));
-                        state = next;
-                        if let Some(command) = command {
-                            match self.execute(&command) {
-                                Ok(Flow::Exit) => return Ok(()),
-                                Ok(Flow::Continue) => refresh_now = true,
-                                Err(err) => state = state.with_error(err.root_cause().to_string()),
-                            }
+                let input = match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => Some(Input::Key(key)),
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            Some(Input::Mouse(Mouse::Click { row: mouse.row }))
+                        }
+                        MouseEventKind::ScrollUp => Some(Input::Mouse(Mouse::ScrollUp)),
+                        MouseEventKind::ScrollDown => Some(Input::Mouse(Mouse::ScrollDown)),
+                        _ => None,
+                    },
+                    Event::FocusGained | Event::Resize(..) => {
+                        refresh_now = true;
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(input) = input {
+                    let (next, command) = reduce(state, input);
+                    state = next;
+                    if let Some(command) = command {
+                        match self.execute(&command) {
+                            Ok(Flow::Exit) => return Ok(()),
+                            Ok(Flow::Continue) => refresh_now = true,
+                            Err(err) => state = state.with_error(err.root_cause().to_string()),
                         }
                     }
-                    Event::FocusGained | Event::Resize(..) => refresh_now = true,
-                    _ => {}
                 }
             }
             if refresh_now {
@@ -69,6 +91,32 @@ impl Sidebar {
             Some(_) => self.workspace.tree(),
             None => Ok(Tree::from_registry(&self.workspace.projects()?)),
         }
+    }
+
+    /// A thread blocked in `tmux wait-for` raises a flag each time a hook fires.
+    fn watch_changes(&self) -> Changes {
+        let changes = Changes {
+            flag: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(AtomicBool::new(false)),
+            server: self.workspace.server().clone(),
+        };
+        if self.own_pane.is_some() {
+            let flag = Arc::clone(&changes.flag);
+            let stopped = Arc::clone(&changes.stopped);
+            let server = changes.server.clone();
+            let workspace_server = server;
+            std::thread::spawn(move || {
+                let waiter =
+                    Workspace::new(workspace_server, Default::default(), Default::default());
+                while !stopped.load(Ordering::SeqCst) {
+                    match waiter.wait_for_change() {
+                        Ok(()) => flag.store(true, Ordering::SeqCst),
+                        Err(_) => std::thread::sleep(REFRESH),
+                    }
+                }
+            });
+        }
+        changes
     }
 
     fn execute(&self, command: &Command) -> Result<Flow> {
@@ -111,6 +159,25 @@ impl Sidebar {
                 Ok(Flow::Continue)
             }
         }
+    }
+}
+
+struct Changes {
+    flag: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    server: crate::tmux::Server,
+}
+
+impl Changes {
+    fn take(&self) -> bool {
+        self.flag.swap(false, Ordering::SeqCst)
+    }
+
+    /// Ends the waiter thread by letting its pending `wait-for` return.
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        let _ = Workspace::new(self.server.clone(), Default::default(), Default::default())
+            .signal_change();
     }
 }
 

@@ -23,14 +23,9 @@ const HELP: &[&str] = &[
 ];
 
 pub fn render(frame: &mut Frame, state: &State) {
-    let [title, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
+    let [body, footer] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
 
-    frame.render_widget(Paragraph::new(Line::from(" proper").bold()), title);
     frame.render_widget(Paragraph::new(body_lines(state, body)), body);
     frame.render_widget(Paragraph::new(footer_line(state)), footer);
 }
@@ -136,12 +131,11 @@ mod tests {
     }
 
     #[test]
-    fn lists_projects_under_the_title_with_a_key_hint_footer() {
+    fn lists_projects_from_the_first_row_with_a_key_hint_footer() {
         let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
         let out = lines(&state);
-        assert_eq!(out[0], " proper");
-        assert_eq!(out[1], " ▾ project");
-        assert_eq!(out[2], " ▾ znaiko");
+        assert_eq!(out[0], " ▾ project");
+        assert_eq!(out[1], " ▾ znaiko");
         assert_eq!(out[11], " ? help  q detach");
     }
 
@@ -162,11 +156,11 @@ mod tests {
         terminal.draw(|frame| render(frame, &state)).unwrap();
         let buffer = terminal.backend().buffer();
         assert!(
-            buffer[(3, 2)].modifier.contains(Modifier::REVERSED),
+            buffer[(3, 1)].modifier.contains(Modifier::REVERSED),
             "znaiko row"
         );
         assert!(
-            !buffer[(3, 1)].modifier.contains(Modifier::REVERSED),
+            !buffer[(3, 0)].modifier.contains(Modifier::REVERSED),
             "project row"
         );
     }
@@ -281,11 +275,11 @@ mod agent_tests {
             ],
         };
         let out = lines(&State::new(tree, Some("%1".into())));
-        assert_eq!(out[1], " ▾ project");
-        assert_eq!(out[2], " ▶ ● claude      node");
-        assert_eq!(out[3], "   ✗ zsh         exit 3");
-        assert_eq!(out[4], "   ✗ gone        signal kill");
-        assert_eq!(out[5], " ▾ old*");
-        assert_eq!(out[6], "   ● claude      node");
+        assert_eq!(out[0], " ▾ project");
+        assert_eq!(out[1], " ▶ ● claude      node");
+        assert_eq!(out[2], "   ✗ zsh         exit 3");
+        assert_eq!(out[3], "   ✗ gone        signal kill");
+        assert_eq!(out[4], " ▾ old*");
+        assert_eq!(out[5], "   ● claude      node");
     }
 }

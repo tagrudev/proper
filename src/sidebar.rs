@@ -26,9 +26,18 @@ pub enum Mode {
     ConfirmKill,
 }
 
+/// Mouse input already translated to sidebar rows; `row` is zero-based from the top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mouse {
+    Click { row: u16 },
+    ScrollUp,
+    ScrollDown,
+}
+
 #[derive(Debug)]
 pub enum Input {
     Key(KeyEvent),
+    Mouse(Mouse),
     Snapshot(Tree),
 }
 
@@ -196,6 +205,40 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
                 Mode::Help => (help_key(state, key), None),
                 Mode::ConfirmKill => confirm_kill_key(state, key),
                 Mode::Normal => normal_key(state, key),
+            }
+        }
+        Input::Mouse(mouse) => {
+            let state = State {
+                error: None,
+                ..state
+            };
+            if state.mode != Mode::Normal {
+                return (
+                    State {
+                        mode: Mode::Normal,
+                        ..state
+                    },
+                    None,
+                );
+            }
+            match mouse {
+                Mouse::ScrollUp => (state.moved(-1), None),
+                Mouse::ScrollDown => (state.moved(1), None),
+                Mouse::Click { row } => {
+                    let row = row as usize;
+                    if row >= state.rows.len() {
+                        return (state, None);
+                    }
+                    let state = State {
+                        cursor: row,
+                        ..state
+                    };
+                    let command = state.agent_at_cursor().map(|agent| Command::Select {
+                        window_id: agent.window_id.clone(),
+                        pane_id: agent.pane_id.clone(),
+                    });
+                    (state, command)
+                }
             }
         }
     }
@@ -626,6 +669,63 @@ mod agent_tests {
         current.projects[0].agents[1].current = true;
         let state = State::new(current, Some("%1".into()));
         assert!(matches!(&state.rows()[state.cursor()], Row::Agent(a) if a.name == "zsh"));
+    }
+
+    fn click(state: State, row: u16) -> (State, Option<Command>) {
+        reduce(state, Input::Mouse(Mouse::Click { row }))
+    }
+
+    #[test]
+    fn clicking_an_agent_row_moves_the_cursor_and_opens_it() {
+        let (state, command) = click(State::new(tree(), Some("%1".into())), 2);
+        assert_eq!(state.cursor(), 2);
+        assert_eq!(
+            command,
+            Some(Command::Select {
+                window_id: "@3".into(),
+                pane_id: "%3".into()
+            })
+        );
+    }
+
+    #[test]
+    fn clicking_a_project_row_only_moves_the_cursor() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j'));
+        let (state, command) = click(state, 3);
+        assert_eq!(state.cursor(), 3);
+        assert_eq!(command, None);
+    }
+
+    #[test]
+    fn clicking_below_the_rows_does_nothing() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j'));
+        let (state, command) = click(state, 9);
+        assert_eq!(state.cursor(), 1);
+        assert_eq!(command, None);
+    }
+
+    #[test]
+    fn the_wheel_moves_the_cursor() {
+        let state = State::new(tree(), Some("%1".into()));
+        let (state, _) = reduce(state, Input::Mouse(Mouse::ScrollDown));
+        let (state, _) = reduce(state, Input::Mouse(Mouse::ScrollDown));
+        assert_eq!(state.cursor(), 2);
+        let (state, _) = reduce(state, Input::Mouse(Mouse::ScrollUp));
+        assert_eq!(state.cursor(), 1);
+    }
+
+    #[test]
+    fn a_click_closes_help_and_cancels_a_pending_kill() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('?'));
+        let (state, command) = click(state, 1);
+        assert_eq!((state.mode(), command), (Mode::Normal, None));
+        let state = press(
+            press(State::new(tree(), Some("%1".into())), KeyCode::Char('j')),
+            KeyCode::Char('x'),
+        );
+        assert_eq!(state.mode(), Mode::ConfirmKill);
+        let (state, command) = click(state, 1);
+        assert_eq!((state.mode(), command), (Mode::Normal, None));
     }
 
     #[test]

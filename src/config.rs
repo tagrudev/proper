@@ -109,11 +109,15 @@ pub fn default_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// `PROPER_CONFIG_DIR` when set, otherwise the platform config dir plus `proper`.
-pub fn config_dir(override_dir: Option<PathBuf>) -> PathBuf {
+/// `PROPER_CONFIG_DIR` when set, else `$XDG_CONFIG_HOME/proper`, else `~/.config/proper`.
+pub fn config_dir(override_dir: Option<PathBuf>, xdg_config_home: Option<PathBuf>) -> PathBuf {
     override_dir.unwrap_or_else(|| {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        xdg_config_home
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".config")
+            })
             .join("proper")
     })
 }
@@ -269,8 +273,17 @@ mod tests {
     }
 
     #[test]
-    fn config_dir_honours_the_override_variable() {
-        assert_eq!(config_dir(Some("/tmp/x".into())), PathBuf::from("/tmp/x"));
-        assert!(config_dir(None).ends_with("proper"));
+    fn config_dir_is_the_override_then_xdg_then_dot_config() {
+        assert_eq!(
+            config_dir(Some("/tmp/x".into()), Some("/xdg".into())),
+            PathBuf::from("/tmp/x")
+        );
+        assert_eq!(
+            config_dir(None, Some("/xdg".into())),
+            PathBuf::from("/xdg/proper")
+        );
+        let default = config_dir(None, None);
+        assert!(default.ends_with(".config/proper"), "{}", default.display());
+        assert!(default.is_absolute());
     }
 }

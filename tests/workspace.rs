@@ -527,11 +527,13 @@ mod sidebar_keys {
         let shell = panes.iter().find(|p| p.role == Some(Role::Agent)).unwrap();
         assert_eq!(shell.path, project.path.display().to_string());
         assert!(shell.pane_active, "focus moved into the new shell");
-        assert!(
-            panes
+        assert!(wait_until(|| {
+            t.server
+                .list_panes()
+                .unwrap()
                 .iter()
                 .any(|p| p.window_id == shell.window_id && p.role == Some(Role::Sidebar))
-        );
+        }));
     }
 }
 
@@ -831,5 +833,112 @@ mod heal {
         let panes = t.server.list_panes().unwrap();
         assert_eq!(panes.iter().filter(|p| p.window_name == "mine").count(), 1);
         assert_eq!(panes.len(), 3);
+    }
+}
+
+mod sidebar_mouse_and_speed {
+    use super::*;
+    use proper::config::{Project, Projects};
+    use proper::tmux::Role;
+    use proper::workspace::Workspace;
+    use std::time::{Duration, Instant};
+
+    fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &path).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        let ws = Workspace::new(
+            t.server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        (ws, config, project)
+    }
+
+    fn screen(t: &TestServer, pane: &str) -> String {
+        t.server
+            .run(&t.server.argv(["capture-pane", "-p", "-t", pane]))
+            .unwrap()
+    }
+
+    fn within(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if condition() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn a_click_on_an_agent_row_opens_that_agent() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        t.server
+            .run(&t.server.argv(["select-window", "-t", "proper:home"]))
+            .unwrap();
+        let panes = t.server.list_panes().unwrap();
+        let sidebar = panes
+            .iter()
+            .find(|p| p.window_name == "home" && p.role == Some(Role::Sidebar))
+            .unwrap();
+        assert!(wait_until(|| screen(&t, &sidebar.id).contains("● sleep")));
+
+        // SGR mouse report: left button press and release on column 5, row 2 (the agent row, 1-based).
+        t.server
+            .run(&t.server.argv([
+                "send-keys",
+                "-t",
+                &sidebar.id,
+                "-l",
+                "\x1b[<0;5;2M\x1b[<0;5;2m",
+            ]))
+            .unwrap();
+
+        assert!(wait_until(|| {
+            t.server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .any(|p| p.id == agent.pane_id && p.window_active && p.pane_active)
+        }));
+    }
+
+    #[test]
+    fn sidebars_notice_a_window_switch_well_under_the_fallback_second() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        ws.new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        let panes = t.server.list_panes().unwrap();
+        let home_sidebar = panes
+            .iter()
+            .find(|p| p.window_name == "home" && p.role == Some(Role::Sidebar))
+            .unwrap();
+        assert!(wait_until(
+            || screen(&t, &home_sidebar.id).contains("▶ ● sleep")
+        ));
+        // let the one second fallback timer pass so it cannot be what refreshes the screen
+        std::thread::sleep(Duration::from_millis(1100));
+
+        t.server
+            .run(&t.server.argv(["select-window", "-t", "proper:home"]))
+            .unwrap();
+
+        assert!(
+            within(Duration::from_millis(400), || !screen(&t, &home_sidebar.id)
+                .contains("▶")),
+            "{}",
+            screen(&t, &home_sidebar.id)
+        );
     }
 }

@@ -65,7 +65,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let config_dir = config::config_dir(std::env::var_os("PROPER_CONFIG_DIR").map(PathBuf::from));
+    let config_dir = config::config_dir(
+        std::env::var_os("PROPER_CONFIG_DIR").map(PathBuf::from),
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    );
     match cli.command {
         Some(Command::Add { path, name }) => {
             let path = path.unwrap_or(std::env::current_dir()?);

@@ -56,6 +56,9 @@ In the sidebar:
 | `q`       | detach                                        |
 | `?`       | help                                          |
 
+With the mouse: click an agent row to open it, click a project row to move the
+cursor, and the wheel scrolls the list.
+
 Anywhere: `M-Tab` or `prefix Tab` toggles focus between sidebar and agent. A
 mouse click on the sidebar does the same. `M-Tab` needs your terminal to send
 Option as Meta (iTerm2: "Esc+", Terminal.app: "Use Option as Meta key",
@@ -74,8 +77,10 @@ screen. A project shown dim with `*` has agents but is no longer in
 - Each agent window is named `project/agent`. Panes carry `@proper_role`,
   `@proper_project` and `@proper_agent` options; that is the only state besides
   `~/.config/proper/projects.toml`.
-- Every sidebar re-reads `tmux list-panes -a` once a second, so all of them
-  agree without talking to each other.
+- Every sidebar re-reads `tmux list-panes -a` when a tmux hook signals a
+  change (window switch, new or dead pane, options set) and once a second as
+  a fallback, so all of them agree without talking to each other. The hooks
+  signal the `proper-changed` wait-for channel; each sidebar blocks on it.
 - `proper` heals before attaching: a window that lost its sidebar gets one
   back, a crashed sidebar is respawned, a window left with only a sidebar is
   closed.

@@ -15,6 +15,19 @@ use crate::tmux::{Pane, Role, Server};
 pub const SESSION: &str = "proper";
 pub const HOME_WINDOW: &str = "home";
 pub const SIDEBAR_WIDTH: u16 = 30;
+/// tmux wait-for channel signalled by hooks whenever something a sidebar shows may have changed.
+pub const CHANGE_CHANNEL: &str = "proper-changed";
+const CHANGE_HOOKS: &[&str] = &[
+    "session-window-changed",
+    "after-new-window",
+    "after-kill-pane",
+    "after-kill-window",
+    "after-split-window",
+    "after-respawn-pane",
+    "after-set-option",
+    "pane-died",
+    "pane-exited",
+];
 const SHIPPED_CONF: &str = include_str!("../tmux.conf");
 
 /// The server's config: the user's own tmux files first, then what proper needs.
@@ -34,6 +47,11 @@ pub fn conf_text(home: Option<&Path>) -> String {
     }
     conf.push_str(SHIPPED_CONF);
     conf.push_str(&format!("set -g main-pane-width {SIDEBAR_WIDTH}\n"));
+    for hook in CHANGE_HOOKS {
+        conf.push_str(&format!(
+            "set-hook -g {hook} 'wait-for -S {CHANGE_CHANNEL}'\n"
+        ));
+    }
     conf
 }
 
@@ -290,6 +308,20 @@ impl Workspace {
         Ok(())
     }
 
+    /// Blocks until a hook signals that panes or windows changed. One signal wakes every waiter.
+    pub fn wait_for_change(&self) -> Result<()> {
+        self.server
+            .run(&self.server.argv(["wait-for", CHANGE_CHANNEL]))?;
+        Ok(())
+    }
+
+    /// Wakes everything blocked in `wait_for_change`.
+    pub fn signal_change(&self) -> Result<()> {
+        self.server
+            .run(&self.server.argv(["wait-for", "-S", CHANGE_CHANNEL]))?;
+        Ok(())
+    }
+
     /// Detaches the client this process runs under; the server and its agents live on.
     pub fn detach(&self) -> Result<()> {
         self.server.run(&self.server.argv(["detach-client"]))?;
@@ -358,6 +390,25 @@ mod tests {
         assert_eq!(lines[0], "source-file -q /Users/me/.tmux.conf");
         assert_eq!(lines[1], "source-file -q /Users/me/.config/tmux/tmux.conf");
         assert!(lines[2..].contains(&"set -g status off"));
+    }
+
+    #[test]
+    fn conf_wakes_sidebars_through_a_wait_for_channel_on_every_relevant_change() {
+        let conf = conf_text(None);
+        for hook in [
+            "session-window-changed",
+            "after-new-window",
+            "after-kill-pane",
+            "after-kill-window",
+            "after-split-window",
+            "after-respawn-pane",
+            "after-set-option",
+            "pane-died",
+            "pane-exited",
+        ] {
+            let line = format!("set-hook -g {hook} 'wait-for -S {CHANGE_CHANNEL}'");
+            assert!(conf.contains(&line), "missing {line} in\n{conf}");
+        }
     }
 
     #[test]
