@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::sidebar::{Mode, Row, State};
 use crate::tmux::Status;
@@ -32,17 +32,10 @@ const HELP: &[&str] = &[
 /// `elapsed` is how long the sidebar has been running; it turns the spinner of working agents.
 pub fn render(frame: &mut Frame, state: &State, elapsed: Duration) {
     let [body, footer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(frame.area());
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
 
     frame.render_widget(Paragraph::new(body_lines(state, body, elapsed)), body);
-    frame.render_widget(
-        Paragraph::new(footer_line(state)).block(
-            Block::new()
-                .borders(Borders::TOP)
-                .border_style(Style::new().dim()),
-        ),
-        footer,
-    );
+    frame.render_widget(Paragraph::new(footer_line(state)), footer);
 }
 
 fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>> {
@@ -188,12 +181,12 @@ mod tests {
     }
 
     #[test]
-    fn lists_projects_from_the_first_row_with_a_key_hint_footer_under_a_rule() {
+    fn lists_projects_from_the_first_row_with_a_key_hint_footer() {
         let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
         let out = lines(&state);
         assert_eq!(out[0], " project");
         assert_eq!(out[1], " znaiko");
-        assert_eq!(out[10], "─".repeat(30));
+        assert_eq!(out[10], "");
         assert_eq!(out[11], " ? help  n claude  q detach");
     }
 
