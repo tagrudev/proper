@@ -356,3 +356,85 @@ fn new_brings_the_server_up_when_it_is_not_running() {
     assert!(panes.iter().any(|p| p.window_name == "home"));
     assert!(panes.iter().any(|p| p.window_name == "project/sleep"));
 }
+
+mod status_hook {
+    use super::*;
+    use proper::config::Projects;
+    use proper::tmux::{Server, Status};
+    use proper::workspace::Workspace;
+
+    fn up() -> (tempfile::TempDir, Server, proper::agents::Agent) {
+        let config = tempfile::tempdir().unwrap();
+        let project_dir = config.path().join("project");
+        fs::create_dir(&project_dir).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &project_dir).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let server = Server::new(format!("proper-status-{}-{n}", std::process::id()));
+        let ws = Workspace::new(
+            server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        let agent = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        (config, server, agent)
+    }
+
+    fn status_cmd(
+        config: &Path,
+        server: &Server,
+        pane: Option<&str>,
+        state: &str,
+    ) -> std::process::Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_proper"));
+        cmd.env("PROPER_CONFIG_DIR", config)
+            .env("PROPER_SOCKET", server.socket())
+            .env("PROPER_SOUND", "")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .args(["status", state]);
+        if let Some(pane) = pane {
+            cmd.env("TMUX_PANE", pane);
+        }
+        cmd.output().unwrap()
+    }
+
+    #[test]
+    fn status_from_inside_an_agent_pane_marks_that_pane() {
+        let (config, server, agent) = up();
+        let out = status_cmd(config.path(), &server, Some(&agent.pane_id), "waiting");
+        let pane = server
+            .list_panes()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == agent.pane_id)
+            .unwrap();
+        let _ = server.run(&server.argv(["kill-server"]));
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        assert_eq!(pane.status, Some(Status::Waiting));
+    }
+
+    #[test]
+    fn status_outside_a_pane_is_a_silent_no_op_and_bad_states_fail() {
+        let (config, server, agent) = up();
+        let outside = status_cmd(config.path(), &server, None, "waiting");
+        let bad = status_cmd(config.path(), &server, Some(&agent.pane_id), "sleepy");
+        let pane = server
+            .list_panes()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == agent.pane_id)
+            .unwrap();
+        let _ = server.run(&server.argv(["kill-server"]));
+        assert!(outside.status.success(), "{}", text(&outside.stderr));
+        assert_eq!(text(&outside.stdout), "");
+        assert!(!bad.status.success());
+        assert!(text(&bad.stderr).contains("sleepy"));
+        assert_eq!(pane.status, None);
+    }
+}

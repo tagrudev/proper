@@ -7,6 +7,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use crate::sidebar::{Mode, Row, State};
+use crate::tmux::Status;
 
 const AGENT_NAME_WIDTH: usize = 11;
 
@@ -56,9 +57,11 @@ fn row_line(row: &Row, selected: bool, width: u16) -> Line<'static> {
         Row::Project(project) => (format!(" ▾ {}*", project.name), Style::new().dim()),
         Row::Agent(agent) => {
             let marker = if agent.current { "▶" } else { " " };
-            let (glyph, detail) = match &agent.dead {
-                Some(death) => ("✗", death.to_string()),
-                None => ("●", agent.command.clone()),
+            let (glyph, detail) = match (&agent.dead, agent.status) {
+                (Some(death), _) => ("✗", death.to_string()),
+                (None, Some(Status::Waiting)) => ("◌", agent.command.clone()),
+                (None, Some(Status::Attention)) => ("!", agent.command.clone()),
+                (None, _) => ("●", agent.command.clone()),
             };
             (
                 format!(
@@ -196,7 +199,7 @@ mod agent_tests {
     use super::*;
     use crate::agents::{Agent, ProjectEntry, Tree};
     use crate::sidebar::State;
-    use crate::tmux::Death;
+    use crate::tmux::{Death, Status};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::path::PathBuf;
@@ -210,6 +213,7 @@ mod agent_tests {
             current,
             dead,
             command: "node".into(),
+            status: None,
         }
     }
 
@@ -226,6 +230,32 @@ mod agent_tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn agent_rows_show_working_waiting_and_attention_glyphs() {
+        let with = |status| Agent {
+            status,
+            ..agent("claude", false, None)
+        };
+        let tree = Tree {
+            projects: vec![ProjectEntry {
+                name: "project".into(),
+                path: PathBuf::from("/p/project"),
+                registered: true,
+                agents: vec![
+                    with(Some(Status::Working)),
+                    with(Some(Status::Waiting)),
+                    with(Some(Status::Attention)),
+                    with(None),
+                ],
+            }],
+        };
+        let out = lines(&State::new(tree, Some("%1".into())));
+        assert_eq!(out[1], "   ● claude      node");
+        assert_eq!(out[2], "   ◌ claude      node");
+        assert_eq!(out[3], "   ! claude      node");
+        assert_eq!(out[4], "   ● claude      node");
     }
 
     #[test]

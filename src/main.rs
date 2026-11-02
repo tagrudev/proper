@@ -4,9 +4,9 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use proper::config::{self, Projects};
-use proper::tmux::{Server, socket_name};
+use proper::tmux::{Server, Status, socket_name};
 use proper::tui::Sidebar;
-use proper::workspace::Workspace;
+use proper::workspace::{Workspace, play, sound_for};
 
 #[derive(Parser)]
 #[command(
@@ -46,6 +46,9 @@ enum Command {
     Kill { agent: String },
     /// Unregister a project that has no agents
     Rm { project: String },
+    /// Report an agent's state from inside its pane (meant for Claude Code hooks):
+    /// working, waiting or attention. Plays a sound for the last two.
+    Status { state: String },
     /// Run the sidebar pane (started by proper itself)
     #[command(hide = true)]
     Sidebar,
@@ -152,6 +155,18 @@ fn run(cli: Cli) -> Result<()> {
             let removed = projects.remove(&project)?;
             workspace.save_projects(&projects)?;
             println!("removed {} ({})", removed.name, removed.path.display());
+            Ok(())
+        }
+        Some(Command::Status { state }) => {
+            let status =
+                Status::parse(&state)?.with_context(|| format!("unknown status {state:?}"))?;
+            let Some(pane) = std::env::var("TMUX_PANE").ok() else {
+                return Ok(());
+            };
+            workspace(config_dir)?.set_status(&pane, status)?;
+            if let Some(sound) = sound_for(status, std::env::var_os("PROPER_SOUND")) {
+                play(&sound);
+            }
             Ok(())
         }
         Some(Command::Sidebar) => Sidebar {

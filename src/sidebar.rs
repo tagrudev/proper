@@ -474,6 +474,7 @@ mod agent_tests {
             current: false,
             dead: None,
             command: "node".into(),
+            status: None,
         }
     }
 

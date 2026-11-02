@@ -1,20 +1,23 @@
 //! The proper tmux server as a whole: bringing it up, attaching, and shaping windows.
 
 use std::convert::Infallible;
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
 use crate::agents::{Agent, Tree, unique_name};
 use crate::config::{Project, Projects, validate_name};
-use crate::tmux::{Pane, Role, Server};
+use crate::tmux::{Pane, Role, Server, Status};
 
 pub const SESSION: &str = "proper";
 pub const HOME_WINDOW: &str = "home";
 pub const SIDEBAR_WIDTH: u16 = 30;
+/// Played when an agent finishes or needs the user, unless `PROPER_SOUND` says otherwise.
+pub const DEFAULT_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 /// tmux wait-for channel signalled by hooks whenever something a sidebar shows may have changed.
 pub const CHANGE_CHANNEL: &str = "proper-changed";
 const CHANGE_HOOKS: &[&str] = &[
@@ -63,6 +66,29 @@ fn agent_name_for(program: &str) -> Result<String> {
     validate_name(&name)
         .with_context(|| format!("cannot name an agent after {program:?}; pass --name"))?;
     Ok(name)
+}
+
+/// Which sound a status change should play: none while working, the default or the
+/// `PROPER_SOUND` override otherwise, and nothing when the override is empty.
+pub fn sound_for(status: Status, override_path: Option<OsString>) -> Option<PathBuf> {
+    match status {
+        Status::Working => None,
+        Status::Waiting | Status::Attention => match override_path {
+            None => Some(PathBuf::from(DEFAULT_SOUND)),
+            Some(path) if path.is_empty() => None,
+            Some(path) => Some(PathBuf::from(path)),
+        },
+    }
+}
+
+/// Plays a sound file without waiting for it; a missing player is not an error.
+pub fn play(sound: &Path) {
+    let _ = Command::new("afplay")
+        .arg(sound)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 pub struct Workspace {
@@ -256,6 +282,7 @@ impl Workspace {
             current: true,
             dead: None,
             command: program.clone(),
+            status: None,
         })
     }
 
@@ -295,6 +322,19 @@ impl Workspace {
             }
         }
         Ok(())
+    }
+
+    /// Records what an agent reported about itself and wakes the sidebars.
+    pub fn set_status(&self, pane_id: &str, status: Status) -> Result<()> {
+        self.server.run(&self.server.argv([
+            "set-option",
+            "-p",
+            "-t",
+            pane_id,
+            "@proper_status",
+            status.as_str(),
+        ]))?;
+        self.signal_change()
     }
 
     /// Shows an agent's window and puts the cursor in its pane.
@@ -416,6 +456,29 @@ mod tests {
             let line = format!("set-hook -g {hook} 'wait-for -S {CHANGE_CHANNEL}'");
             assert!(conf.contains(&line), "missing {line} in\n{conf}");
         }
+    }
+
+    #[test]
+    fn waiting_and_attention_play_the_default_sound_unless_overridden() {
+        use crate::tmux::Status;
+        assert_eq!(sound_for(Status::Working, None), None);
+        assert_eq!(
+            sound_for(Status::Waiting, None),
+            Some(PathBuf::from(DEFAULT_SOUND))
+        );
+        assert_eq!(
+            sound_for(Status::Attention, None),
+            Some(PathBuf::from(DEFAULT_SOUND))
+        );
+        assert_eq!(
+            sound_for(Status::Waiting, Some("".into())),
+            None,
+            "empty override silences"
+        );
+        assert_eq!(
+            sound_for(Status::Waiting, Some("/x/Ping.aiff".into())),
+            Some(PathBuf::from("/x/Ping.aiff"))
+        );
     }
 
     #[test]

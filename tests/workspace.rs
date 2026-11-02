@@ -1154,3 +1154,71 @@ mod agent_environment_and_exit {
             .any(|p| p.id == sidebar.id && p.dead.is_none())));
     }
 }
+
+mod status {
+    use super::*;
+    use proper::config::{Project, Projects};
+    use proper::tmux::{Role, Status};
+    use proper::workspace::Workspace;
+    use std::time::{Duration, Instant};
+
+    fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &path).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        let ws = Workspace::new(
+            t.server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        (ws, config, project)
+    }
+
+    fn screen(t: &TestServer, pane: &str) -> String {
+        t.server
+            .run(&t.server.argv(["capture-pane", "-p", "-t", pane]))
+            .unwrap()
+    }
+
+    #[test]
+    fn set_status_marks_the_pane_and_sidebars_show_it_quickly() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        let panes = t.server.list_panes().unwrap();
+        let sidebar = panes
+            .iter()
+            .find(|p| p.window_id == agent.window_id && p.role == Some(Role::Sidebar))
+            .unwrap();
+        assert!(wait_until(|| screen(&t, &sidebar.id).contains("● sleep")));
+        std::thread::sleep(Duration::from_millis(1100));
+
+        ws.set_status(&agent.pane_id, Status::Attention).unwrap();
+
+        let started = Instant::now();
+        assert!(
+            wait_until(|| screen(&t, &sidebar.id).contains("! sleep")),
+            "{}",
+            screen(&t, &sidebar.id)
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "took {:?}",
+            started.elapsed()
+        );
+        let pane = t
+            .server
+            .list_panes()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == agent.pane_id)
+            .unwrap();
+        assert_eq!(pane.status, Some(Status::Attention));
+    }
+}

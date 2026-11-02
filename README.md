@@ -75,9 +75,32 @@ Option as Meta (iTerm2: "Esc+", Terminal.app: "Use Option as Meta key",
 Ghostty: `macos-option-as-alt`).
 
 Rows read `● name command` for a running agent and `✗ name exit 3` (or
-`signal kill`) for one that crashed. `▶` marks the agent whose window is on
+`signal kill`) for one that crashed. Agents that report their state (see
+below) show `◌` when they have finished and wait for you, and `!` when they
+need an answer or a permission. `▶` marks the agent whose window is on
 screen. A project shown dim with `*` has agents but is no longer in
 `projects.toml`.
+
+## Sounds and agent state
+
+`proper status <working|waiting|attention>` run inside an agent pane marks
+that agent in every sidebar and, for `waiting` and `attention`, plays a sound.
+Outside a proper pane it does nothing, so it is safe in any Claude Code
+session. Wire it to Claude Code hooks in `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "proper status working" }] }],
+  "Stop":             [{ "hooks": [{ "type": "command", "command": "proper status waiting" }] }],
+  "Notification":     [{ "matcher": "permission_prompt|elicitation_dialog",
+                         "hooks": [{ "type": "command", "command": "proper status attention" }] }]
+}
+```
+
+The sound is `/System/Library/Sounds/Glass.aiff` played with `afplay`. Set
+`PROPER_SOUND` to another file to change it, or to an empty string to turn it
+off. The variable is read where the hook runs, so put it in your shell
+profile.
 
 ## How it fits together
 

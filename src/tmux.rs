@@ -10,9 +10,38 @@ use anyhow::{Context, Result, anyhow, bail};
 pub const PANE_FORMAT: &str = concat!(
     "#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{pane_active}\t",
     "#{pane_dead}\t#{pane_dead_status}\t#{pane_dead_signal}\t#{pane_current_command}\t#{pane_current_path}\t",
-    "#{pane_width}\t#{pane_index}\t#{@proper_role}\t#{@proper_project}\t#{@proper_agent}"
+    "#{pane_width}\t#{pane_index}\t#{@proper_role}\t#{@proper_project}\t#{@proper_agent}\t",
+    "#{@proper_status}"
 );
-pub const FIELD_COUNT: usize = 15;
+pub const FIELD_COUNT: usize = 16;
+
+/// What an agent last reported about itself through `proper status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Working,
+    Waiting,
+    Attention,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Working => "working",
+            Status::Waiting => "waiting",
+            Status::Attention => "attention",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Option<Status>> {
+        match value {
+            "" => Ok(None),
+            "working" => Ok(Some(Status::Working)),
+            "waiting" => Ok(Some(Status::Waiting)),
+            "attention" => Ok(Some(Status::Attention)),
+            other => bail!("unknown status {other:?}; use working, waiting or attention"),
+        }
+    }
+}
 
 /// How a pane's process ended; tmux keeps the pane around because of remain-on-exit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +101,7 @@ pub struct Pane {
     pub role: Option<Role>,
     pub project: String,
     pub agent: String,
+    pub status: Option<Status>,
 }
 
 pub fn parse_panes(listing: &str) -> Result<Vec<Pane>> {
@@ -115,6 +145,7 @@ fn parse_pane(line: &str) -> Result<Pane> {
         role: Role::parse(fields[12])?,
         project: fields[13].to_string(),
         agent: fields[14].to_string(),
+        status: Status::parse(fields[15])?,
     })
 }
 
@@ -247,6 +278,17 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_agent_status_option() {
+        let panes = parse_panes(FIXTURE).unwrap();
+        assert_eq!(panes[2].status, Some(Status::Waiting));
+        assert_eq!(panes[3].status, None);
+        assert_eq!(Status::parse("working").unwrap(), Some(Status::Working));
+        assert_eq!(Status::parse("attention").unwrap(), Some(Status::Attention));
+        assert!(Status::parse("bogus").is_err());
+        assert_eq!(Status::Waiting.as_str(), "waiting");
+    }
+
+    #[test]
     fn parses_a_pane_killed_by_a_signal() {
         let panes = parse_panes(FIXTURE).unwrap();
         let killed = &panes[4];
@@ -258,7 +300,7 @@ mod tests {
 
     #[test]
     fn rejects_a_dead_pane_with_neither_status_nor_signal() {
-        let line = "%1\t@0\thome\t1\t0\t1\t\t\tsleep\t/x\t30\t0\tagent\tp\ta\n";
+        let line = "%1\t@0\thome\t1\t0\t1\t\t\tsleep\t/x\t30\t0\tagent\tp\ta\t\n";
         assert!(parse_panes(line).is_err());
     }
 
@@ -275,7 +317,7 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_role() {
-        let line = "%1\t@0\thome\t1\t0\t0\t\t\tsleep\t/x\t30\t0\tbogus\t\t\n";
+        let line = "%1\t@0\thome\t1\t0\t0\t\t\tsleep\t/x\t30\t0\tbogus\t\t\t\n";
         assert!(parse_panes(line).is_err());
     }
 

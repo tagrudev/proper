@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::config::Projects;
-use crate::tmux::{Death, Pane, Role};
+use crate::tmux::{Death, Pane, Role, Status};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
@@ -16,6 +16,7 @@ pub struct Agent {
     pub current: bool,
     pub dead: Option<Death>,
     pub command: String,
+    pub status: Option<Status>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,7 @@ impl Tree {
                     current: pane.window_active,
                     dead: pane.dead.clone(),
                     command: pane.command.clone(),
+                    status: pane.status,
                 });
             }
         }
@@ -131,7 +133,7 @@ pub fn unique_name(base: &str, taken: &[&str]) -> String {
 mod tests {
     use super::*;
     use crate::config::Project;
-    use crate::tmux::Role;
+    use crate::tmux::{Role, Status};
 
     fn registry(names: &[&str]) -> Projects {
         Projects {
@@ -168,6 +170,7 @@ mod tests {
     fn an_agent_carries_its_pane_state() {
         let tree = Tree::build(&panes(), &registry(&["project"]));
         let claude = &tree.projects[0].agents[0];
+        assert_eq!(claude.status, Some(Status::Waiting));
         assert_eq!(claude.project, "project");
         assert_eq!(claude.pane_id, "%2");
         assert_eq!(claude.window_id, "@1");
@@ -252,6 +255,7 @@ mod tests {
             role: None,
             project: String::new(),
             agent: String::new(),
+            status: None,
         });
         assert!(
             !sidebar_is_alone(&panes, "%1"),
