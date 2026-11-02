@@ -8,6 +8,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::agents::{Agent, Tree, unique_name};
+use crate::config::{Project, Projects, validate_name};
 use crate::tmux::{Role, Server};
 
 pub const SESSION: &str = "proper";
@@ -25,6 +27,16 @@ pub fn conf_text(home: Option<&Path>) -> String {
     conf.push_str(SHIPPED_CONF);
     conf.push_str(&format!("set -g main-pane-width {SIDEBAR_WIDTH}\n"));
     conf
+}
+
+/// The program's file name, which must itself be a valid agent name.
+fn agent_name_for(program: &str) -> Result<String> {
+    let name = Path::new(program)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    validate_name(&name).with_context(|| format!("cannot name an agent after {program:?}; pass --name"))?;
+    Ok(name)
 }
 
 pub struct Workspace {
@@ -91,6 +103,78 @@ impl Workspace {
         let sidebar = sidebar.trim().to_string();
         self.mark(&sidebar, Role::Sidebar)?;
         Ok(sidebar)
+    }
+
+    /// Everything the sidebar shows: the registry plus whatever agent panes the server has.
+    pub fn tree(&self) -> Result<Tree> {
+        Ok(Tree::build(&self.server.list_panes()?, &self.projects()?))
+    }
+
+    pub fn projects(&self) -> Result<Projects> {
+        Projects::load(&self.config_dir)
+    }
+
+    pub fn save_projects(&self, projects: &Projects) -> Result<()> {
+        projects.save(&self.config_dir)
+    }
+
+    /// Opens a window named `project/name` running `command` in the project directory,
+    /// adds a sidebar to it and leaves focus in the agent pane.
+    pub fn new_agent(&self, project: &Project, name: Option<&str>, command: &[String]) -> Result<Agent> {
+        let program = command.first().context("agent command is empty")?;
+        let tree = self.tree()?;
+        let taken: Vec<&str> = tree
+            .projects
+            .iter()
+            .filter(|p| p.name == project.name)
+            .flat_map(|p| p.agents.iter().map(|a| a.name.as_str()))
+            .collect();
+        let name = match name {
+            Some(name) => {
+                validate_name(name)?;
+                if taken.contains(&name) {
+                    bail!("{}/{name} already exists", project.name);
+                }
+                name.to_string()
+            }
+            None => unique_name(&agent_name_for(program)?, &taken),
+        };
+
+        let window = format!("{}/{name}", project.name);
+        let path = project.path.display().to_string();
+        let mut argv = vec![
+            "new-window", "-t", &format!("{SESSION}:"), "-c", &path, "-n", &window,
+            "-P", "-F", "#{pane_id}\t#{window_id}",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        argv.extend(command.iter().cloned());
+        let ids = self.server.run(&self.server.argv(argv))?;
+        let (pane_id, window_id) = ids.trim().split_once('\t').context("new-window printed no ids")?;
+
+        self.server.run(&self.server.argv([
+            "set-option", "-p", "-t", pane_id, "@proper_role", Role::Agent.as_str(), ";",
+            "set-option", "-p", "-t", pane_id, "@proper_project", &project.name, ";",
+            "set-option", "-p", "-t", pane_id, "@proper_agent", &name,
+        ]))?;
+        self.add_sidebar(pane_id)?;
+
+        Ok(Agent {
+            name,
+            project: project.name.clone(),
+            pane_id: pane_id.to_string(),
+            window_id: window_id.to_string(),
+            current: true,
+            dead: None,
+            command: program.clone(),
+        })
+    }
+
+    /// Closes an agent's window, sidebar included.
+    pub fn kill(&self, window_id: &str) -> Result<()> {
+        self.server.run(&self.server.argv(["kill-window", "-t", window_id]))?;
+        Ok(())
     }
 
     fn mark(&self, pane: &str, role: Role) -> Result<()> {

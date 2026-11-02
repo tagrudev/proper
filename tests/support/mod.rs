@@ -16,7 +16,9 @@ impl TestServer {
     pub fn start() -> TestServer {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let socket = format!("proper-test-{}-{n}", std::process::id());
-        TestServer { server: Server::new(socket) }
+        TestServer {
+            server: Server::new(socket),
+        }
     }
 }
 
