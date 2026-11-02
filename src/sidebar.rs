@@ -23,6 +23,7 @@ pub enum Row {
 pub enum Mode {
     Normal,
     Help,
+    ConfirmKill,
 }
 
 #[derive(Debug)]
@@ -47,6 +48,12 @@ pub enum Command {
         project: ProjectRow,
         program: Program,
     },
+    Kill {
+        window_id: String,
+    },
+    Respawn {
+        pane_id: String,
+    },
     Detach,
     Quit,
 }
@@ -63,9 +70,11 @@ pub struct State {
 impl State {
     /// `own_pane` is the sidebar's own tmux pane id; `None` means running outside tmux.
     pub fn new(tree: Tree, own_pane: Option<String>) -> State {
+        let rows = rows(tree);
+        let cursor = current_agent(&rows).unwrap_or(0);
         State {
-            rows: rows(tree),
-            cursor: 0,
+            rows,
+            cursor,
             mode: Mode::Normal,
             error: None,
             own_pane,
@@ -101,6 +110,13 @@ impl State {
 
     fn row(&self) -> Option<&Row> {
         self.rows.get(self.cursor)
+    }
+
+    pub fn agent_at_cursor(&self) -> Option<&Agent> {
+        match self.row()? {
+            Row::Agent(agent) => Some(agent),
+            Row::Project(_) => None,
+        }
     }
 
     /// The project the cursor is in: the row itself or the agent's project header.
@@ -178,6 +194,7 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
             };
             match state.mode {
                 Mode::Help => (help_key(state, key), None),
+                Mode::ConfirmKill => confirm_kill_key(state, key),
                 Mode::Normal => normal_key(state, key),
             }
         }
@@ -192,6 +209,22 @@ fn help_key(state: State, key: KeyEvent) -> State {
         },
         _ => state,
     }
+}
+
+fn confirm_kill_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
+    let command = match key.code {
+        KeyCode::Char('y') => state.agent_at_cursor().map(|agent| Command::Kill {
+            window_id: agent.window_id.clone(),
+        }),
+        _ => None,
+    };
+    (
+        State {
+            mode: Mode::Normal,
+            ..state
+        },
+        command,
+    )
 }
 
 fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
@@ -222,6 +255,29 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
             });
             (state, command)
         }
+        KeyCode::Char('x') => match state.agent_at_cursor() {
+            Some(_) => (
+                State {
+                    mode: Mode::ConfirmKill,
+                    ..state
+                },
+                None,
+            ),
+            None => (state, None),
+        },
+        KeyCode::Char('r') => match state.agent_at_cursor() {
+            Some(agent) if agent.dead.is_some() => {
+                let command = Command::Respawn {
+                    pane_id: agent.pane_id.clone(),
+                };
+                (state, Some(command))
+            }
+            Some(agent) => {
+                let error = format!("{} is still running", agent.name);
+                (state.with_error(error), None)
+            }
+            None => (state, None),
+        },
         KeyCode::Char('?') => (
             State {
                 mode: Mode::Help,
@@ -562,6 +618,88 @@ mod agent_tests {
             1,
             "an unchanged current window leaves the cursor alone"
         );
+    }
+
+    #[test]
+    fn a_new_state_starts_on_the_agent_whose_window_is_current() {
+        let mut current = tree();
+        current.projects[0].agents[1].current = true;
+        let state = State::new(current, Some("%1".into()));
+        assert!(matches!(&state.rows()[state.cursor()], Row::Agent(a) if a.name == "zsh"));
+    }
+
+    #[test]
+    fn x_asks_before_killing_and_y_confirms() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j'));
+        let (state, command) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::ConfirmKill);
+        let (state, command) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::Kill {
+                window_id: "@2".into()
+            })
+        );
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn any_other_key_cancels_the_kill() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j'));
+        let state = press(state, KeyCode::Char('x'));
+        for code in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Char('j')] {
+            let (after, command) = reduce(
+                state.clone(),
+                Input::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            );
+            assert_eq!(command, None);
+            assert_eq!(after.mode(), Mode::Normal);
+            assert_eq!(after.cursor(), 1, "cancelling does not move the cursor");
+        }
+    }
+
+    #[test]
+    fn x_on_a_project_does_nothing() {
+        let (state, command) = reduce(
+            State::new(tree(), Some("%1".into())),
+            Input::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn r_respawns_only_dead_agents() {
+        let mut dead = tree();
+        dead.projects[0].agents[1].dead = Some(3);
+        let state = press(
+            press(State::new(dead, Some("%1".into())), KeyCode::Char('j')),
+            KeyCode::Char('j'),
+        );
+        let (_, command) = reduce(
+            state.clone(),
+            Input::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+        );
+        assert_eq!(
+            command,
+            Some(Command::Respawn {
+                pane_id: "%3".into()
+            })
+        );
+        let alive = press(state, KeyCode::Char('k'));
+        let (alive, command) = reduce(
+            alive,
+            Input::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+        );
+        assert_eq!(command, None);
+        assert_eq!(alive.error(), Some("claude is still running"));
     }
 
     fn project_row(name: &str) -> ProjectRow {

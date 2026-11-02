@@ -534,3 +534,135 @@ mod sidebar_keys {
         );
     }
 }
+
+mod dead_agents {
+    use super::*;
+    use proper::config::{Project, Projects};
+    use proper::tmux::Role;
+    use proper::workspace::Workspace;
+
+    fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &path).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        let ws = Workspace::new(
+            t.server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        (ws, config, project)
+    }
+
+    /// Exits 3 the first time it runs and sleeps on every run after that.
+    fn dies_once(config: &tempfile::TempDir) -> Vec<String> {
+        let flag = config.path().join("ran-once");
+        let script = format!(
+            "test -e {flag} && exec sleep 1000; touch {flag}; exit 3",
+            flag = flag.display()
+        );
+        vec!["sh".to_string(), "-c".to_string(), script]
+    }
+
+    fn dead_status(t: &TestServer, pane_id: &str) -> Option<i32> {
+        t.server
+            .list_panes()
+            .unwrap()
+            .iter()
+            .find(|p| p.id == pane_id)
+            .and_then(|p| p.dead)
+    }
+
+    #[test]
+    fn respawn_restarts_the_command_in_the_same_pane() {
+        let t = TestServer::start();
+        let (ws, config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, Some("crash"), &dies_once(&config))
+            .unwrap();
+        assert!(wait_until(|| dead_status(&t, &agent.pane_id) == Some(3)));
+
+        ws.respawn(&agent.pane_id).unwrap();
+
+        assert!(wait_until(|| {
+            t.server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .any(|p| p.id == agent.pane_id && p.dead.is_none() && p.command == "sleep")
+        }));
+    }
+
+    #[test]
+    fn respawning_a_live_agent_is_refused_by_tmux() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        assert!(ws.respawn(&agent.pane_id).is_err());
+    }
+
+    #[test]
+    fn x_then_y_in_the_sidebar_kills_the_agent_and_r_revives_a_dead_one() {
+        let t = TestServer::start();
+        let (ws, config, project) = up(&t);
+        let crash = ws
+            .new_agent(&project, Some("crash"), &dies_once(&config))
+            .unwrap();
+        let sleep = ws
+            .new_agent(
+                &project,
+                Some("sleep"),
+                &["sleep".to_string(), "1000".to_string()],
+            )
+            .unwrap();
+        assert!(wait_until(|| dead_status(&t, &crash.pane_id) == Some(3)));
+        let panes = t.server.list_panes().unwrap();
+        let sidebar = panes
+            .iter()
+            .find(|p| p.window_id == sleep.window_id && p.role == Some(Role::Sidebar))
+            .unwrap();
+        let screen = || {
+            t.server
+                .run(&t.server.argv(["capture-pane", "-p", "-t", &sidebar.id]))
+                .unwrap()
+        };
+        assert!(
+            wait_until(|| screen().contains("✗ crash") && screen().contains("▶ ● sleep")),
+            "{}",
+            screen()
+        );
+
+        // rows: project, crash, sleep; the cursor snapped to sleep (current window)
+        t.server
+            .run(&t.server.argv(["send-keys", "-t", &sidebar.id, "k", "r"]))
+            .unwrap();
+        assert!(
+            wait_until(|| dead_status(&t, &crash.pane_id).is_none()),
+            "{}",
+            screen()
+        );
+
+        t.server
+            .run(&t.server.argv(["send-keys", "-t", &sidebar.id, "j", "x"]))
+            .unwrap();
+        assert!(
+            wait_until(|| screen().contains("kill project/sleep? y/n")),
+            "{}",
+            screen()
+        );
+        t.server
+            .run(&t.server.argv(["send-keys", "-t", &sidebar.id, "y"]))
+            .unwrap();
+        assert!(wait_until(|| !t
+            .server
+            .list_panes()
+            .unwrap()
+            .iter()
+            .any(|p| p.window_id == sleep.window_id)));
+    }
+}

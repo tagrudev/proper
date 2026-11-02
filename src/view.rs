@@ -38,13 +38,13 @@ pub fn render(frame: &mut Frame, state: &State) {
 fn body_lines(state: &State, area: Rect) -> Vec<Line<'static>> {
     match state.mode() {
         Mode::Help => HELP.iter().map(|h| Line::from(*h)).collect(),
-        Mode::Normal if state.rows().is_empty() => {
+        Mode::Normal | Mode::ConfirmKill if state.rows().is_empty() => {
             vec![
                 Line::from(" no projects yet").dim(),
                 Line::from(" run: proper add <dir>").dim(),
             ]
         }
-        Mode::Normal => state
+        Mode::Normal | Mode::ConfirmKill => state
             .rows()
             .iter()
             .enumerate()
@@ -84,6 +84,11 @@ fn row_line(row: &Row, selected: bool, width: u16) -> Line<'static> {
 }
 
 fn footer_line(state: &State) -> Line<'static> {
+    if state.mode() == Mode::ConfirmKill
+        && let Some(agent) = state.agent_at_cursor()
+    {
+        return Line::from(format!(" kill {}/{}? y/n", agent.project, agent.name)).yellow();
+    }
     match state.error() {
         Some(error) => Line::from(format!(" {error}")).red(),
         None if state.in_tmux() => Line::from(" ? help  q detach").dim(),
@@ -226,6 +231,30 @@ mod agent_tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_footer_asks_before_a_kill() {
+        use crate::sidebar::{Input, reduce};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let tree = Tree {
+            projects: vec![ProjectEntry {
+                name: "project".into(),
+                path: PathBuf::from("/p/project"),
+                registered: true,
+                agents: vec![agent("zsh", false, None)],
+            }],
+        };
+        let state = State::new(tree, Some("%1".into()));
+        let (state, _) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
+        );
+        let (state, _) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        assert_eq!(lines(&state)[7], " kill project/zsh? y/n");
     }
 
     #[test]

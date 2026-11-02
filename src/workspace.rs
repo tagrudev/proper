@@ -183,6 +183,12 @@ impl Workspace {
         Ok(())
     }
 
+    /// Runs a dead pane's original command again in the same pane.
+    pub fn respawn(&self, pane_id: &str) -> Result<()> {
+        self.server.run(&self.server.argv(["respawn-pane", "-t", pane_id]))?;
+        Ok(())
+    }
+
     /// Closes an agent's window, sidebar included.
     pub fn kill(&self, window_id: &str) -> Result<()> {
         self.server.run(&self.server.argv(["kill-window", "-t", window_id]))?;

@@ -74,6 +74,14 @@ impl Sidebar {
     fn execute(&self, command: &Command) -> Result<Flow> {
         match command {
             Command::Quit => Ok(Flow::Exit),
+            Command::Kill { window_id } => {
+                self.workspace.kill(window_id)?;
+                Ok(Flow::Continue)
+            }
+            Command::Respawn { pane_id } => {
+                self.workspace.respawn(pane_id)?;
+                Ok(Flow::Continue)
+            }
             Command::Select { window_id, pane_id } => {
                 self.workspace.select(window_id, pane_id)?;
                 Ok(Flow::Continue)
