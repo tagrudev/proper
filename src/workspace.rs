@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::agents::{Agent, Tree, unique_name};
 use crate::config::{Project, Projects, validate_name};
-use crate::tmux::{Role, Server};
+use crate::tmux::{Pane, Role, Server};
 
 pub const SESSION: &str = "proper";
 pub const HOME_WINDOW: &str = "home";
@@ -169,6 +169,34 @@ impl Workspace {
             dead: None,
             command: program.clone(),
         })
+    }
+
+    /// Repairs proper's own windows: a missing sidebar is split back in, a crashed
+    /// sidebar or hint is respawned, and a window left with only a sidebar is closed.
+    /// Windows without any proper pane belong to the user and are left alone.
+    pub fn heal(&self) -> Result<()> {
+        let panes = self.server.list_panes()?;
+        let mut windows: Vec<&str> = panes.iter().map(|p| p.window_id.as_str()).collect();
+        windows.dedup();
+        for window in windows {
+            let in_window: Vec<&Pane> = panes.iter().filter(|p| p.window_id == window).collect();
+            let sidebar = in_window.iter().find(|p| p.role == Some(Role::Sidebar));
+            let content = in_window.iter().find(|p| matches!(p.role, Some(Role::Agent | Role::Hint)));
+            match (content, sidebar) {
+                (Some(content), None) => {
+                    self.add_sidebar(&content.id)?;
+                    self.server.run(&self.server.argv(["select-layout", "-t", window, "main-vertical"]))?;
+                }
+                (None, Some(_)) => self.kill(window)?,
+                (Some(content), Some(sidebar)) => {
+                    for pane in [content, sidebar].into_iter().filter(|p| p.dead.is_some() && p.role != Some(Role::Agent)) {
+                        self.respawn(&pane.id)?;
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        Ok(())
     }
 
     /// Shows an agent's window and puts the cursor in its pane.

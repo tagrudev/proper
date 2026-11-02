@@ -245,6 +245,39 @@ mod with_server {
     }
 
     #[test]
+    fn launching_proper_heals_before_attaching() {
+        let up = Up::start();
+        let home = up.config.path();
+        assert!(
+            up.proper(&["new", "project", "--", "sleep", "1000"], home)
+                .status
+                .success()
+        );
+        let panes = up.server.list_panes().unwrap();
+        let sidebar = panes
+            .iter()
+            .find(|p| {
+                p.window_name == "project/sleep" && p.role == Some(proper::tmux::Role::Sidebar)
+            })
+            .unwrap();
+        up.server
+            .run(&up.server.argv(["kill-pane", "-t", &sidebar.id]))
+            .unwrap();
+
+        let out = up.proper(&[], home);
+        assert!(
+            text(&out.stderr).contains("not a terminal"),
+            "{}",
+            text(&out.stderr)
+        );
+
+        let panes = up.server.list_panes().unwrap();
+        assert!(panes.iter().any(
+            |p| p.window_name == "project/sleep" && p.role == Some(proper::tmux::Role::Sidebar)
+        ));
+    }
+
+    #[test]
     fn rm_refuses_while_agents_live_and_works_after_they_are_killed() {
         let up = Up::start();
         let home = up.config.path();

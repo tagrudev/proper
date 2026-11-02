@@ -61,8 +61,8 @@ fn row_line(row: &Row, selected: bool, width: u16) -> Line<'static> {
         Row::Project(project) => (format!(" ▾ {}*", project.name), Style::new().dim()),
         Row::Agent(agent) => {
             let marker = if agent.current { "▶" } else { " " };
-            let (glyph, detail) = match agent.dead {
-                Some(status) => ("✗", format!("exit {status}")),
+            let (glyph, detail) = match &agent.dead {
+                Some(death) => ("✗", death.to_string()),
                 None => ("●", agent.command.clone()),
             };
             (
@@ -202,11 +202,12 @@ mod agent_tests {
     use super::*;
     use crate::agents::{Agent, ProjectEntry, Tree};
     use crate::sidebar::State;
+    use crate::tmux::Death;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::path::PathBuf;
 
-    fn agent(name: &str, current: bool, dead: Option<i32>) -> Agent {
+    fn agent(name: &str, current: bool, dead: Option<Death>) -> Agent {
         Agent {
             name: name.into(),
             project: "project".into(),
@@ -265,7 +266,11 @@ mod agent_tests {
                     name: "project".into(),
                     path: PathBuf::from("/p/project"),
                     registered: true,
-                    agents: vec![agent("claude", true, None), agent("zsh", false, Some(3))],
+                    agents: vec![
+                        agent("claude", true, None),
+                        agent("zsh", false, Some(Death::Exit(3))),
+                        agent("gone", false, Some(Death::Signal("kill".into()))),
+                    ],
                 },
                 ProjectEntry {
                     name: "old".into(),
@@ -279,7 +284,8 @@ mod agent_tests {
         assert_eq!(out[1], " ▾ project");
         assert_eq!(out[2], " ▶ ● claude      node");
         assert_eq!(out[3], "   ✗ zsh         exit 3");
-        assert_eq!(out[4], " ▾ old*");
-        assert_eq!(out[5], "   ● claude      node");
+        assert_eq!(out[4], "   ✗ gone        signal kill");
+        assert_eq!(out[5], " ▾ old*");
+        assert_eq!(out[6], "   ● claude      node");
     }
 }

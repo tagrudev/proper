@@ -1,6 +1,7 @@
 //! The only module that spells "tmux": builds argv for the proper server and
 //! parses what it says back.
 
+use std::fmt;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -8,10 +9,26 @@ use anyhow::{Context, Result, anyhow, bail};
 /// One line per pane; fields separated by tabs in this exact order.
 pub const PANE_FORMAT: &str = concat!(
     "#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{pane_active}\t",
-    "#{pane_dead}\t#{pane_dead_status}\t#{pane_current_command}\t#{pane_current_path}\t",
+    "#{pane_dead}\t#{pane_dead_status}\t#{pane_dead_signal}\t#{pane_current_command}\t#{pane_current_path}\t",
     "#{pane_width}\t#{pane_index}\t#{@proper_role}\t#{@proper_project}\t#{@proper_agent}"
 );
-pub const FIELD_COUNT: usize = 14;
+pub const FIELD_COUNT: usize = 15;
+
+/// How a pane's process ended; tmux keeps the pane around because of remain-on-exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Death {
+    Exit(i32),
+    Signal(String),
+}
+
+impl fmt::Display for Death {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Death::Exit(status) => write!(f, "exit {status}"),
+            Death::Signal(name) => write!(f, "signal {name}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -47,8 +64,7 @@ pub struct Pane {
     pub window_name: String,
     pub window_active: bool,
     pub pane_active: bool,
-    /// Exit status when the pane's process has exited and remain-on-exit kept it.
-    pub dead: Option<i32>,
+    pub dead: Option<Death>,
     pub command: String,
     pub path: String,
     pub width: u16,
@@ -71,14 +87,15 @@ fn parse_pane(line: &str) -> Result<Pane> {
         );
     }
     let flag = |value: &str| value == "1";
-    let dead = if flag(fields[5]) {
-        Some(
-            fields[6]
+    let dead = match (flag(fields[5]), fields[6], fields[7]) {
+        (false, _, _) => None,
+        (true, status, "") if !status.is_empty() => Some(Death::Exit(
+            status
                 .parse()
                 .with_context(|| format!("pane_dead_status in {line:?}"))?,
-        )
-    } else {
-        None
+        )),
+        (true, "", signal) if !signal.is_empty() => Some(Death::Signal(signal.to_string())),
+        (true, _, _) => bail!("dead pane without a status or a signal in {line:?}"),
     };
     Ok(Pane {
         id: fields[0].to_string(),
@@ -87,17 +104,17 @@ fn parse_pane(line: &str) -> Result<Pane> {
         window_active: flag(fields[3]),
         pane_active: flag(fields[4]),
         dead,
-        command: fields[7].to_string(),
-        path: fields[8].to_string(),
-        width: fields[9]
+        command: fields[8].to_string(),
+        path: fields[9].to_string(),
+        width: fields[10]
             .parse()
             .with_context(|| format!("pane_width in {line:?}"))?,
-        index: fields[10]
+        index: fields[11]
             .parse()
             .with_context(|| format!("pane_index in {line:?}"))?,
-        role: Role::parse(fields[11])?,
-        project: fields[12].to_string(),
-        agent: fields[13].to_string(),
+        role: Role::parse(fields[12])?,
+        project: fields[13].to_string(),
+        agent: fields[14].to_string(),
     })
 }
 
@@ -187,7 +204,7 @@ mod tests {
     #[test]
     fn parses_every_pane_from_a_real_listing() {
         let panes = parse_panes(FIXTURE).unwrap();
-        assert_eq!(panes.len(), 5);
+        assert_eq!(panes.len(), 6);
     }
 
     #[test]
@@ -224,15 +241,31 @@ mod tests {
     fn parses_a_dead_pane_with_its_exit_status_and_empty_path() {
         let panes = parse_panes(FIXTURE).unwrap();
         let dead = &panes[3];
-        assert_eq!(dead.dead, Some(3));
+        assert_eq!(dead.dead, Some(Death::Exit(3)));
         assert_eq!(dead.command, "sh");
         assert_eq!(dead.path, "");
     }
 
     #[test]
+    fn parses_a_pane_killed_by_a_signal() {
+        let panes = parse_panes(FIXTURE).unwrap();
+        let killed = &panes[4];
+        assert_eq!(killed.dead, Some(Death::Signal("kill".into())));
+        assert_eq!(killed.agent, "killed");
+        assert_eq!(killed.dead.as_ref().unwrap().to_string(), "signal kill");
+        assert_eq!(Death::Exit(3).to_string(), "exit 3");
+    }
+
+    #[test]
+    fn rejects_a_dead_pane_with_neither_status_nor_signal() {
+        let line = "%1\t@0\thome\t1\t0\t1\t\t\tsleep\t/x\t30\t0\tagent\tp\ta\n";
+        assert!(parse_panes(line).is_err());
+    }
+
+    #[test]
     fn unmarked_pane_has_no_role() {
         let panes = parse_panes(FIXTURE).unwrap();
-        assert_eq!(panes[4].role, None);
+        assert_eq!(panes[5].role, None);
     }
 
     #[test]
@@ -242,7 +275,7 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_role() {
-        let line = "%1\t@0\thome\t1\t0\t0\t\tsleep\t/x\t30\t0\tbogus\t\t\n";
+        let line = "%1\t@0\thome\t1\t0\t0\t\t\tsleep\t/x\t30\t0\tbogus\t\t\n";
         assert!(parse_panes(line).is_err());
     }
 

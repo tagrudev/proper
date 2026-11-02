@@ -208,7 +208,7 @@ mod agents {
     use super::*;
     use proper::agents::Tree;
     use proper::config::{Project, Projects};
-    use proper::tmux::Role;
+    use proper::tmux::{Death, Role};
     use proper::workspace::{SIDEBAR_WIDTH, Workspace};
 
     fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
@@ -309,7 +309,7 @@ mod agents {
         assert!(wait_until(|| {
             let tree = Tree::build(&t.server.list_panes().unwrap(), &registry);
             tree.agent("project", "crash")
-                .is_some_and(|a| a.dead == Some(3))
+                .is_some_and(|a| a.dead == Some(Death::Exit(3)))
         }));
         let tree = Tree::build(&t.server.list_panes().unwrap(), &registry);
         assert_eq!(tree.agent("project", "sleep").unwrap().dead, None);
@@ -538,7 +538,7 @@ mod sidebar_keys {
 mod dead_agents {
     use super::*;
     use proper::config::{Project, Projects};
-    use proper::tmux::Role;
+    use proper::tmux::{Death, Role};
     use proper::workspace::Workspace;
 
     fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
@@ -567,13 +567,13 @@ mod dead_agents {
         vec!["sh".to_string(), "-c".to_string(), script]
     }
 
-    fn dead_status(t: &TestServer, pane_id: &str) -> Option<i32> {
+    fn dead_status(t: &TestServer, pane_id: &str) -> Option<Death> {
         t.server
             .list_panes()
             .unwrap()
             .iter()
             .find(|p| p.id == pane_id)
-            .and_then(|p| p.dead)
+            .and_then(|p| p.dead.clone())
     }
 
     #[test]
@@ -583,7 +583,9 @@ mod dead_agents {
         let agent = ws
             .new_agent(&project, Some("crash"), &dies_once(&config))
             .unwrap();
-        assert!(wait_until(|| dead_status(&t, &agent.pane_id) == Some(3)));
+        assert!(wait_until(
+            || dead_status(&t, &agent.pane_id) == Some(Death::Exit(3))
+        ));
 
         ws.respawn(&agent.pane_id).unwrap();
 
@@ -620,7 +622,9 @@ mod dead_agents {
                 &["sleep".to_string(), "1000".to_string()],
             )
             .unwrap();
-        assert!(wait_until(|| dead_status(&t, &crash.pane_id) == Some(3)));
+        assert!(wait_until(
+            || dead_status(&t, &crash.pane_id) == Some(Death::Exit(3))
+        ));
         let panes = t.server.list_panes().unwrap();
         let sidebar = panes
             .iter()
@@ -664,5 +668,168 @@ mod dead_agents {
             .unwrap()
             .iter()
             .any(|p| p.window_id == sleep.window_id)));
+    }
+}
+
+mod heal {
+    use super::*;
+    use proper::config::{Project, Projects};
+    use proper::tmux::{Pane, Role};
+    use proper::workspace::{SIDEBAR_WIDTH, Workspace};
+
+    fn up(t: &TestServer) -> (Workspace, tempfile::TempDir, Project) {
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("project");
+        std::fs::create_dir(&path).unwrap();
+        let mut projects = Projects::default();
+        let project = projects.add("project", &path).unwrap().clone();
+        projects.save(config.path()).unwrap();
+        let ws = Workspace::new(
+            t.server.clone(),
+            config.path().to_path_buf(),
+            env!("CARGO_BIN_EXE_proper").into(),
+        );
+        ws.bootstrap(None).unwrap();
+        (ws, config, project)
+    }
+
+    fn sidebar_in(panes: &[Pane], window_id: &str) -> Option<Pane> {
+        panes
+            .iter()
+            .find(|p| p.window_id == window_id && p.role == Some(Role::Sidebar))
+            .cloned()
+    }
+
+    fn sleep() -> Vec<String> {
+        vec!["sleep".to_string(), "1000".to_string()]
+    }
+
+    #[test]
+    fn a_healthy_server_is_left_alone() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        ws.new_agent(&project, None, &sleep()).unwrap();
+        let before = t.server.list_panes().unwrap();
+        ws.heal().unwrap();
+        assert_eq!(t.server.list_panes().unwrap(), before);
+    }
+
+    #[test]
+    fn a_window_that_lost_its_sidebar_gets_a_new_one() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws.new_agent(&project, None, &sleep()).unwrap();
+        let sidebar = sidebar_in(&t.server.list_panes().unwrap(), &agent.window_id).unwrap();
+        t.server
+            .run(&t.server.argv(["kill-pane", "-t", &sidebar.id]))
+            .unwrap();
+        assert!(sidebar_in(&t.server.list_panes().unwrap(), &agent.window_id).is_none());
+
+        ws.heal().unwrap();
+
+        let panes = t.server.list_panes().unwrap();
+        let healed = sidebar_in(&panes, &agent.window_id).expect("sidebar is back");
+        let agent_pane = panes.iter().find(|p| p.id == agent.pane_id).unwrap();
+        assert_eq!(healed.width, SIDEBAR_WIDTH);
+        assert!(healed.index < agent_pane.index);
+        assert!(agent_pane.pane_active, "healing does not steal focus");
+        assert!(wait_until(|| t
+            .server
+            .list_panes()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == healed.id && p.command == "proper")));
+    }
+
+    #[test]
+    fn a_crashed_sidebar_or_hint_is_respawned() {
+        let t = TestServer::start();
+        let (ws, _config, _project) = up(&t);
+        let panes = t.server.list_panes().unwrap();
+        for role in [Role::Sidebar, Role::Hint] {
+            let pane = panes.iter().find(|p| p.role == Some(role)).unwrap();
+            let pid = t
+                .server
+                .run(
+                    &t.server
+                        .argv(["display-message", "-p", "-t", &pane.id, "#{pane_pid}"]),
+                )
+                .unwrap();
+            std::process::Command::new("kill")
+                .args(["-9", pid.trim()])
+                .status()
+                .unwrap();
+            assert!(wait_until(|| t
+                .server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .any(|p| p.id == pane.id && p.dead.is_some())));
+        }
+
+        ws.heal().unwrap();
+
+        assert!(wait_until(|| {
+            t.server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .all(|p| p.dead.is_none() && p.command == "proper")
+        }));
+        assert_eq!(
+            t.server.list_panes().unwrap().len(),
+            2,
+            "respawned in place, nothing added"
+        );
+    }
+
+    #[test]
+    fn a_window_with_only_a_sidebar_is_closed() {
+        let t = TestServer::start();
+        let (ws, _config, project) = up(&t);
+        let agent = ws.new_agent(&project, None, &sleep()).unwrap();
+        t.server
+            .run(&t.server.argv(["kill-pane", "-t", &agent.pane_id]))
+            .unwrap();
+        assert!(sidebar_in(&t.server.list_panes().unwrap(), &agent.window_id).is_some());
+
+        ws.heal().unwrap();
+
+        assert!(
+            t.server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .all(|p| p.window_id != agent.window_id)
+        );
+        assert_eq!(
+            t.server.list_panes().unwrap().len(),
+            2,
+            "home window untouched"
+        );
+    }
+
+    #[test]
+    fn windows_that_are_not_propers_are_ignored() {
+        let t = TestServer::start();
+        let (ws, _config, _project) = up(&t);
+        t.server
+            .run(&t.server.argv([
+                "new-window",
+                "-d",
+                "-t",
+                "proper:",
+                "-n",
+                "mine",
+                "sleep",
+                "1000",
+            ]))
+            .unwrap();
+
+        ws.heal().unwrap();
+
+        let panes = t.server.list_panes().unwrap();
+        assert_eq!(panes.iter().filter(|p| p.window_name == "mine").count(), 1);
+        assert_eq!(panes.len(), 3);
     }
 }

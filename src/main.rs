@@ -88,8 +88,8 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Ls) => {
             let tree = workspace(config_dir)?.tree()?;
             for agent in tree.projects.iter().flat_map(|p| p.agents.iter()) {
-                let state = match agent.dead {
-                    Some(status) => format!("exit {status}"),
+                let state = match &agent.dead {
+                    Some(death) => death.to_string(),
                     None => "alive".to_string(),
                 };
                 println!("{}\t{}\t{state}\t{}\t{}", agent.project, agent.name, agent.command, agent.pane_id);
@@ -138,6 +138,7 @@ fn open(config_dir: PathBuf) -> Result<()> {
     let server = Server::from_env();
     match std::env::var("TMUX") {
         Ok(tmux) if socket_name(&tmux).as_deref() == Some(server.socket()) => {
+            Workspace::new(server, config_dir, std::env::current_exe()?).heal()?;
             println!("already inside proper");
             return Ok(());
         }
@@ -145,7 +146,9 @@ fn open(config_dir: PathBuf) -> Result<()> {
         Err(_) => {}
     }
     let workspace = Workspace::new(server, config_dir, std::env::current_exe()?);
-    if !workspace.is_running()? {
+    if workspace.is_running()? {
+        workspace.heal()?;
+    } else {
         workspace.bootstrap(dirs::home_dir().as_deref())?;
     }
     workspace.attach()?;

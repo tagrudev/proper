@@ -678,7 +678,7 @@ mod agent_tests {
     #[test]
     fn r_respawns_only_dead_agents() {
         let mut dead = tree();
-        dead.projects[0].agents[1].dead = Some(3);
+        dead.projects[0].agents[1].dead = Some(crate::tmux::Death::Exit(3));
         let state = press(
             press(State::new(dead, Some("%1".into())), KeyCode::Char('j')),
             KeyCode::Char('j'),

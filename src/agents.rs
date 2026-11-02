@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::config::Projects;
-use crate::tmux::{Pane, Role};
+use crate::tmux::{Death, Pane, Role};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
@@ -14,7 +14,7 @@ pub struct Agent {
     pub window_id: String,
     /// The agent's window is the one the client is looking at.
     pub current: bool,
-    pub dead: Option<i32>,
+    pub dead: Option<Death>,
     pub command: String,
 }
 
@@ -67,7 +67,7 @@ impl Tree {
                     pane_id: pane.id.clone(),
                     window_id: pane.window_id.clone(),
                     current: pane.window_active,
-                    dead: pane.dead,
+                    dead: pane.dead.clone(),
                     command: pane.command.clone(),
                 });
             }
@@ -148,7 +148,7 @@ mod tests {
         assert!(project.registered);
         assert_eq!(project.path, PathBuf::from("/p/project"));
         let agents: Vec<&str> = project.agents.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(agents, ["claude", "zsh"], "sorted by name");
+        assert_eq!(agents, ["claude", "killed", "zsh"], "sorted by name");
     }
 
     #[test]
@@ -161,8 +161,10 @@ mod tests {
         assert!(!claude.current);
         assert_eq!(claude.dead, None);
         assert_eq!(claude.command, "sleep");
-        let zsh = &tree.projects[0].agents[1];
-        assert_eq!(zsh.dead, Some(3));
+        let killed = &tree.projects[0].agents[1];
+        assert_eq!(killed.dead, Some(Death::Signal("kill".into())));
+        let zsh = &tree.projects[0].agents[2];
+        assert_eq!(zsh.dead, Some(Death::Exit(3)));
     }
 
     #[test]
@@ -186,16 +188,16 @@ mod tests {
             PathBuf::from("/private/tmp"),
             "path comes from a live pane"
         );
-        assert_eq!(project.agents.len(), 2);
+        assert_eq!(project.agents.len(), 3);
     }
 
     #[test]
     fn sidebar_hint_unmarked_and_half_marked_panes_are_not_agents() {
         let mut panes = panes();
-        panes[4].role = Some(Role::Agent);
+        panes[5].role = Some(Role::Agent);
         let tree = Tree::build(&panes, &registry(&["project"]));
         let total: usize = tree.projects.iter().map(|p| p.agents.len()).sum();
-        assert_eq!(total, 2);
+        assert_eq!(total, 3);
     }
 
     #[test]
