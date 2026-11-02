@@ -1,15 +1,21 @@
 //! Draws the sidebar from its state. No tmux here.
 
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
+use ratatui::style::{Color, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::sidebar::{Mode, Row, State};
 use crate::tmux::Status;
 
-const AGENT_NAME_WIDTH: usize = 11;
+/// Background of the row under the cursor, a soft grey that lifts it off a dark theme.
+const CURSOR: Color = Color::Indexed(237);
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_FRAME: Duration = Duration::from_millis(100);
 
 const HELP: &[&str] = &[
     " j/k   move",
@@ -23,15 +29,23 @@ const HELP: &[&str] = &[
     " Esc   close help",
 ];
 
-pub fn render(frame: &mut Frame, state: &State) {
+/// `elapsed` is how long the sidebar has been running; it turns the spinner of working agents.
+pub fn render(frame: &mut Frame, state: &State, elapsed: Duration) {
     let [body, footer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(frame.area());
 
-    frame.render_widget(Paragraph::new(body_lines(state, body)), body);
-    frame.render_widget(Paragraph::new(footer_line(state)), footer);
+    frame.render_widget(Paragraph::new(body_lines(state, body, elapsed)), body);
+    frame.render_widget(
+        Paragraph::new(footer_line(state)).block(
+            Block::new()
+                .borders(Borders::TOP)
+                .border_style(Style::new().dim()),
+        ),
+        footer,
+    );
 }
 
-fn body_lines(state: &State, area: Rect) -> Vec<Line<'static>> {
+fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>> {
     match state.mode() {
         Mode::Help => HELP.iter().map(|h| Line::from(*h)).collect(),
         Mode::Normal | Mode::ConfirmKill if state.rows().is_empty() => {
@@ -40,45 +54,73 @@ fn body_lines(state: &State, area: Rect) -> Vec<Line<'static>> {
                 Line::from(" run: proper add <dir>").dim(),
             ]
         }
-        Mode::Normal | Mode::ConfirmKill => state
-            .rows()
-            .iter()
-            .enumerate()
-            .map(|(index, row)| row_line(row, index == state.cursor(), area.width))
-            .collect(),
+        Mode::Normal | Mode::ConfirmKill => {
+            let rows = state.rows();
+            rows.iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let next_is_agent = matches!(rows.get(index + 1), Some(Row::Agent(_)));
+                    let line = row_line(row, next_is_agent, area.width, elapsed);
+                    if index == state.cursor() {
+                        line.bg(CURSOR)
+                    } else {
+                        line
+                    }
+                })
+                .collect()
+        }
     }
 }
 
-fn row_line(row: &Row, selected: bool, width: u16) -> Line<'static> {
-    let (text, style) = match row {
-        Row::Project(project) if project.registered => {
-            (format!(" ▾ {}", project.name), Style::new())
-        }
-        Row::Project(project) => (format!(" ▾ {}*", project.name), Style::new().dim()),
-        Row::Agent(agent) => {
-            let marker = if agent.current { "▶" } else { " " };
-            let (glyph, detail) = match (&agent.dead, agent.status) {
-                (Some(death), _) => ("✗", death.to_string()),
-                (None, Some(Status::Waiting)) => ("◌", agent.command.clone()),
-                (None, Some(Status::Attention)) => ("!", agent.command.clone()),
-                (None, _) => ("●", agent.command.clone()),
+/// `next_is_agent` tells a project that it has agents and an agent that more follow it.
+/// Rows are padded to `width` so the cursor background spans the pane.
+fn row_line(row: &Row, next_is_agent: bool, width: u16, elapsed: Duration) -> Line<'static> {
+    match row {
+        Row::Project(project) => {
+            let (mark, style) = match (project.registered, next_is_agent) {
+                (false, _) => ("*", Style::new().dim()),
+                (true, true) => ("", Style::new().bold()),
+                (true, false) => ("", Style::new().dim()),
             };
-            (
-                format!(
-                    " {marker} {glyph} {:<AGENT_NAME_WIDTH$} {detail}",
-                    agent.name
-                ),
-                Style::new(),
-            )
+            let text = format!(" {}{mark}", project.name);
+            Line::styled(format!("{text:<width$}", width = width as usize), style)
         }
-    };
-    let padded = format!("{text:<width$}", width = width as usize);
-    let style = if selected {
-        style.add_modifier(Modifier::REVERSED)
-    } else {
-        style
-    };
-    Line::styled(padded, style)
+        Row::Agent(agent) => {
+            let guide = if next_is_agent { "├" } else { "└" };
+            let command = if agent.command == agent.name {
+                Span::default()
+            } else {
+                agent.command.clone().dim()
+            };
+            let (glyph, detail) = match (&agent.dead, agent.status) {
+                (Some(death), _) => ("✗".red(), death.to_string().red()),
+                (None, Some(Status::Working)) => {
+                    let frame = elapsed.as_millis() / SPINNER_FRAME.as_millis();
+                    (SPINNER[frame as usize % SPINNER.len()].green(), command)
+                }
+                (None, Some(Status::Waiting)) => ("◌".yellow(), command),
+                (None, Some(Status::Attention)) => ("!".red().bold(), command),
+                (None, None) => ("●".dim(), command),
+            };
+            let marker = if agent.current {
+                "◂".blue()
+            } else {
+                " ".into()
+            };
+            let name = [
+                " ".into(),
+                guide.dim(),
+                " ".into(),
+                glyph,
+                " ".into(),
+                agent.name.clone().into(),
+            ];
+            let tail = [" ".into(), detail, " ".into(), marker, " ".into()];
+            let used: usize = name.iter().chain(&tail).map(Span::width).sum();
+            let fill = Span::raw(" ".repeat((width as usize).saturating_sub(used)));
+            Line::from_iter(name.into_iter().chain([fill]).chain(tail))
+        }
+    }
 }
 
 fn footer_line(state: &State) -> Line<'static> {
@@ -89,8 +131,17 @@ fn footer_line(state: &State) -> Line<'static> {
     }
     match state.error() {
         Some(error) => Line::from(format!(" {error}")).red(),
-        None if state.in_tmux() => Line::from(" ? help  q detach").dim(),
-        None => Line::from(" ? help  q quit").dim(),
+        None => {
+            let leave = if state.in_tmux() { " detach" } else { " quit" };
+            Line::from(vec![
+                " ?".into(),
+                " help  ".dim(),
+                "n".into(),
+                " claude  ".dim(),
+                "q".into(),
+                leave.dim(),
+            ])
+        }
     }
 }
 
@@ -102,6 +153,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::Modifier;
     use std::path::PathBuf;
 
     fn tree(names: &[&str]) -> Tree {
@@ -120,7 +172,9 @@ mod tests {
 
     fn lines(state: &State) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
-        terminal.draw(|frame| render(frame, state)).unwrap();
+        terminal
+            .draw(|frame| render(frame, state, Duration::ZERO))
+            .unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
             .map(|y| {
@@ -134,38 +188,37 @@ mod tests {
     }
 
     #[test]
-    fn lists_projects_from_the_first_row_with_a_key_hint_footer() {
+    fn lists_projects_from_the_first_row_with_a_key_hint_footer_under_a_rule() {
         let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
         let out = lines(&state);
-        assert_eq!(out[0], " ▾ project");
-        assert_eq!(out[1], " ▾ znaiko");
-        assert_eq!(out[11], " ? help  q detach");
+        assert_eq!(out[0], " project");
+        assert_eq!(out[1], " znaiko");
+        assert_eq!(out[10], "─".repeat(30));
+        assert_eq!(out[11], " ? help  n claude  q detach");
     }
 
     #[test]
     fn footer_says_quit_outside_tmux() {
         let state = State::new(tree(&["project"]), None);
-        assert_eq!(lines(&state)[11], " ? help  q quit");
+        assert_eq!(lines(&state)[11], " ? help  n claude  q quit");
     }
 
     #[test]
-    fn the_cursor_row_is_highlighted() {
+    fn the_cursor_row_has_a_soft_background_across_the_whole_width() {
         let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
         let (state, _) = reduce(
             state,
             Input::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
         );
         let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
-        terminal.draw(|frame| render(frame, &state)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, Duration::ZERO))
+            .unwrap();
         let buffer = terminal.backend().buffer();
-        assert!(
-            buffer[(3, 1)].modifier.contains(Modifier::REVERSED),
-            "znaiko row"
-        );
-        assert!(
-            !buffer[(3, 0)].modifier.contains(Modifier::REVERSED),
-            "project row"
-        );
+        assert_eq!(buffer[(3, 1)].bg, CURSOR, "znaiko row");
+        assert_eq!(buffer[(29, 1)].bg, CURSOR, "znaiko row, right edge");
+        assert_ne!(buffer[(3, 0)].bg, CURSOR, "project row");
+        assert!(!buffer[(3, 1)].modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -202,6 +255,8 @@ mod agent_tests {
     use crate::tmux::{Death, Status};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Modifier;
     use std::path::PathBuf;
 
     fn agent(name: &str, current: bool, dead: Option<Death>) -> Agent {
@@ -217,10 +272,16 @@ mod agent_tests {
         }
     }
 
-    fn lines(state: &State) -> Vec<String> {
+    fn buffer(state: &State, elapsed: Duration) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
-        terminal.draw(|frame| render(frame, state)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        terminal
+            .draw(|frame| render(frame, state, elapsed))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn lines(state: &State) -> Vec<String> {
+        let buffer = buffer(state, Duration::ZERO);
         (0..buffer.area.height)
             .map(|y| {
                 (0..buffer.area.width)
@@ -232,30 +293,115 @@ mod agent_tests {
             .collect()
     }
 
-    #[test]
-    fn agent_rows_show_working_waiting_and_attention_glyphs() {
-        let with = |status| Agent {
-            status,
-            ..agent("claude", false, None)
-        };
+    fn one_project(agents: Vec<Agent>) -> State {
         let tree = Tree {
             projects: vec![ProjectEntry {
                 name: "project".into(),
                 path: PathBuf::from("/p/project"),
                 registered: true,
-                agents: vec![
-                    with(Some(Status::Working)),
-                    with(Some(Status::Waiting)),
-                    with(Some(Status::Attention)),
-                    with(None),
-                ],
+                agents,
             }],
         };
-        let out = lines(&State::new(tree, Some("%1".into())));
-        assert_eq!(out[1], "   ● claude      node");
-        assert_eq!(out[2], "   ◌ claude      node");
-        assert_eq!(out[3], "   ! claude      node");
-        assert_eq!(out[4], "   ● claude      node");
+        State::new(tree, Some("%1".into()))
+    }
+
+    fn with(status: Option<Status>) -> Agent {
+        Agent {
+            status,
+            ..agent("claude", false, None)
+        }
+    }
+
+    #[test]
+    fn agent_rows_show_working_waiting_and_attention_glyphs() {
+        let out = lines(&one_project(vec![
+            with(Some(Status::Working)),
+            with(Some(Status::Waiting)),
+            with(Some(Status::Attention)),
+            with(None),
+        ]));
+        assert_eq!(out[1], " ├ ⠋ claude            node");
+        assert_eq!(out[2], " ├ ◌ claude            node");
+        assert_eq!(out[3], " ├ ! claude            node");
+        assert_eq!(out[4], " └ ● claude            node");
+    }
+
+    #[test]
+    fn state_glyphs_are_coloured_by_how_much_they_need_you() {
+        let state = one_project(vec![
+            with(Some(Status::Working)),
+            with(Some(Status::Waiting)),
+            with(Some(Status::Attention)),
+            with(None),
+            agent("zsh", false, Some(Death::Exit(3))),
+        ]);
+        let buffer = buffer(&state, Duration::ZERO);
+        assert_eq!(buffer[(3, 1)].fg, Color::Green, "working");
+        assert_eq!(buffer[(3, 2)].fg, Color::Yellow, "waiting");
+        assert_eq!(buffer[(3, 3)].fg, Color::Red, "attention");
+        assert!(
+            buffer[(3, 3)].modifier.contains(Modifier::BOLD),
+            "attention"
+        );
+        assert!(buffer[(3, 4)].modifier.contains(Modifier::DIM), "no state");
+        assert_eq!(buffer[(3, 5)].fg, Color::Red, "dead");
+        assert_eq!(buffer[(24, 5)].fg, Color::Red, "exit status");
+        assert!(
+            buffer[(1, 1)].modifier.contains(Modifier::DIM),
+            "tree guide"
+        );
+    }
+
+    #[test]
+    fn a_working_agent_spins() {
+        let state = one_project(vec![with(Some(Status::Working))]);
+        let glyph = |millis| {
+            buffer(&state, Duration::from_millis(millis))[(3, 1)]
+                .symbol()
+                .to_string()
+        };
+        assert_eq!(glyph(0), "⠋");
+        assert_eq!(glyph(150), "⠙");
+        assert_eq!(glyph(1000), "⠋", "ten frames to a second, then round again");
+    }
+
+    #[test]
+    fn the_command_shows_only_when_it_differs_from_the_name() {
+        let out = lines(&one_project(vec![
+            Agent {
+                command: "claude".into(),
+                ..agent("claude", false, None)
+            },
+            Agent {
+                command: "bash".into(),
+                ..agent("zsh", false, None)
+            },
+        ]));
+        assert_eq!(out[1], " ├ ● claude");
+        assert_eq!(out[2], " └ ● zsh               bash");
+    }
+
+    #[test]
+    fn projects_with_agents_are_bold_and_empty_ones_dim() {
+        let tree = Tree {
+            projects: vec![
+                ProjectEntry {
+                    name: "busy".into(),
+                    path: PathBuf::from("/p/busy"),
+                    registered: true,
+                    agents: vec![agent("claude", false, None)],
+                },
+                ProjectEntry {
+                    name: "idle".into(),
+                    path: PathBuf::from("/p/idle"),
+                    registered: true,
+                    agents: vec![],
+                },
+            ],
+        };
+        let buffer = buffer(&State::new(tree, Some("%1".into())), Duration::ZERO);
+        assert!(buffer[(1, 0)].modifier.contains(Modifier::BOLD), "busy");
+        assert!(buffer[(1, 2)].modifier.contains(Modifier::DIM), "idle");
     }
 
     #[test]
@@ -304,12 +450,16 @@ mod agent_tests {
                 },
             ],
         };
-        let out = lines(&State::new(tree, Some("%1".into())));
-        assert_eq!(out[0], " ▾ project");
-        assert_eq!(out[1], " ▶ ● claude      node");
-        assert_eq!(out[2], "   ✗ zsh         exit 3");
-        assert_eq!(out[3], "   ✗ gone        signal kill");
-        assert_eq!(out[4], " ▾ old*");
-        assert_eq!(out[5], "   ● claude      node");
+        let state = State::new(tree, Some("%1".into()));
+        let out = lines(&state);
+        assert_eq!(out[0], " project");
+        assert_eq!(out[1], " ├ ● claude            node ◂");
+        assert_eq!(out[2], " ├ ✗ zsh             exit 3");
+        assert_eq!(out[3], " └ ✗ gone       signal kill");
+        assert_eq!(out[4], " old*");
+        assert_eq!(out[5], " └ ● claude            node");
+        let buffer = buffer(&state, Duration::ZERO);
+        assert_eq!(buffer[(28, 1)].fg, Color::Blue, "on-screen marker");
+        assert!(buffer[(1, 4)].modifier.contains(Modifier::DIM), "old*");
     }
 }

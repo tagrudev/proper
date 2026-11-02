@@ -74,12 +74,14 @@ mouse click on the sidebar does the same. `M-Tab` needs your terminal to send
 Option as Meta (iTerm2: "Esc+", Terminal.app: "Use Option as Meta key",
 Ghostty: `macos-option-as-alt`).
 
-Rows read `● name command` for a running agent and `✗ name exit 3` (or
-`signal kill`) for one that crashed. Agents that report their state (see
-below) show `◌` when they have finished and wait for you, and `!` when they
-need an answer or a permission. `▶` marks the agent whose window is on
-screen. A project shown dim with `*` has agents but is no longer in
-`projects.toml`.
+Projects with agents are bold, empty ones dim. Agents hang under their
+project as `├ ● name command`; the command shows only when it differs from
+the name. A crashed agent reads `✗ name exit 3` (or `signal kill`) in red.
+Agents that report their state (see below) spin in green while working,
+show a yellow `◌` when they have finished and wait for you, and a red `!`
+when they need an answer or a permission. A blue `◂` at the right edge marks
+the agent whose window is on screen. A project shown dim with `*` has agents
+but is no longer in `projects.toml`.
 
 ## Sounds and agent state
 
