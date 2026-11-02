@@ -1,8 +1,8 @@
-pub mod tmux;
-pub mod config;
 pub mod agents;
-pub mod sidebar;
-pub mod view;
-pub mod tui;
-pub mod workspace;
+pub mod config;
 pub mod hint;
+pub mod sidebar;
+pub mod tmux;
+pub mod tui;
+pub mod view;
+pub mod workspace;

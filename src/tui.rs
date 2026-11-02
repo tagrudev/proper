@@ -88,12 +88,20 @@ impl Sidebar {
             }
             Command::New { project, program } => {
                 if project.path.as_os_str().is_empty() {
-                    bail!("{} has no directory on record; run proper add", project.name);
+                    bail!(
+                        "{} has no directory on record; run proper add",
+                        project.name
+                    );
                 }
-                let project = Project { name: project.name.clone(), path: project.path.clone() };
+                let project = Project {
+                    name: project.name.clone(),
+                    path: project.path.clone(),
+                };
                 let command = match program {
                     Program::Claude => vec!["claude".to_string()],
-                    Program::Shell => vec![std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())],
+                    Program::Shell => {
+                        vec![std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())]
+                    }
                 };
                 self.workspace.new_agent(&project, None, &command)?;
                 Ok(Flow::Continue)

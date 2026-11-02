@@ -9,7 +9,11 @@ use proper::tui::Sidebar;
 use proper::workspace::Workspace;
 
 #[derive(Parser)]
-#[command(name = "proper", version, about = "A tmux workspace for you and your coding agents")]
+#[command(
+    name = "proper",
+    version,
+    about = "A tmux workspace for you and your coding agents"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -71,7 +75,11 @@ fn run(cli: Cli) -> Result<()> {
             println!("added {} -> {}", added.name, added.path.display());
             projects.save(&config_dir)
         }
-        Some(Command::New { project, name, command }) => {
+        Some(Command::New {
+            project,
+            name,
+            command,
+        }) => {
             let workspace = workspace(config_dir)?;
             let projects = workspace.projects()?;
             let project = match project {
@@ -80,9 +88,18 @@ fn run(cli: Cli) -> Result<()> {
                     "the current directory is not inside a registered project; pass a project name or run `proper add`",
                 )?,
             };
-            let command = if command.is_empty() { vec!["claude".to_string()] } else { command };
+            let command = if command.is_empty() {
+                vec!["claude".to_string()]
+            } else {
+                command
+            };
             let agent = workspace.new_agent(project, name.as_deref(), &command)?;
-            println!("started {}/{} in {}", agent.project, agent.name, project.path.display());
+            println!(
+                "started {}/{} in {}",
+                agent.project,
+                agent.name,
+                project.path.display()
+            );
             Ok(())
         }
         Some(Command::Ls) => {
@@ -92,15 +109,22 @@ fn run(cli: Cli) -> Result<()> {
                     Some(death) => death.to_string(),
                     None => "alive".to_string(),
                 };
-                println!("{}\t{}\t{state}\t{}\t{}", agent.project, agent.name, agent.command, agent.pane_id);
+                println!(
+                    "{}\t{}\t{state}\t{}\t{}",
+                    agent.project, agent.name, agent.command, agent.pane_id
+                );
             }
             Ok(())
         }
         Some(Command::Kill { agent }) => {
             let workspace = workspace(config_dir)?;
-            let (project, name) = agent.split_once('/').context("give the agent as PROJECT/AGENT")?;
+            let (project, name) = agent
+                .split_once('/')
+                .context("give the agent as PROJECT/AGENT")?;
             let tree = workspace.tree()?;
-            let found = tree.agent(project, name).with_context(|| format!("no agent {agent}"))?;
+            let found = tree
+                .agent(project, name)
+                .with_context(|| format!("no agent {agent}"))?;
             workspace.kill(&found.window_id)
         }
         Some(Command::Rm { project }) => {
@@ -113,7 +137,10 @@ fn run(cli: Cli) -> Result<()> {
                 .flat_map(|p| p.agents.iter().map(|a| format!("{}/{}", a.project, a.name)))
                 .collect();
             if !live.is_empty() {
-                anyhow::bail!("{project} still has agents: {}; kill them first", live.join(", "));
+                anyhow::bail!(
+                    "{project} still has agents: {}; kill them first",
+                    live.join(", ")
+                );
             }
             let mut projects = workspace.projects()?;
             let removed = projects.remove(&project)?;
@@ -121,16 +148,22 @@ fn run(cli: Cli) -> Result<()> {
             println!("removed {} ({})", removed.name, removed.path.display());
             Ok(())
         }
-        Some(Command::Sidebar) => {
-            Sidebar { workspace: workspace(config_dir)?, own_pane: std::env::var("TMUX_PANE").ok() }.run()
+        Some(Command::Sidebar) => Sidebar {
+            workspace: workspace(config_dir)?,
+            own_pane: std::env::var("TMUX_PANE").ok(),
         }
+        .run(),
         Some(Command::Hint) => proper::hint::run(),
         None => open(config_dir),
     }
 }
 
 fn workspace(config_dir: PathBuf) -> Result<Workspace> {
-    Ok(Workspace::new(Server::from_env(), config_dir, std::env::current_exe()?))
+    Ok(Workspace::new(
+        Server::from_env(),
+        config_dir,
+        std::env::current_exe()?,
+    ))
 }
 
 /// Brings the proper server up if needed and attaches this terminal to it.
