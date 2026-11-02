@@ -122,6 +122,32 @@ mod bootstrap {
     }
 
     #[test]
+    fn tmux_accepts_every_line_of_the_generated_config() {
+        let t = TestServer::start();
+        t.server
+            .run(&t.server.argv([
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "x",
+                "sleep",
+                "1000",
+            ]))
+            .unwrap();
+        let conf = tempfile::NamedTempFile::new().unwrap();
+        fs::write(conf.path(), proper::workspace::conf_text(None)).unwrap();
+
+        let sourced = t.server.run(
+            &t.server
+                .argv(["source-file", conf.path().to_str().unwrap()]),
+        );
+
+        assert!(sourced.is_ok(), "{}", sourced.unwrap_err());
+    }
+
+    #[test]
     fn sidebar_and_hint_processes_stay_alive() {
         let t = TestServer::start();
         let (ws, _config) = workspace(&t);
@@ -911,6 +937,42 @@ mod sidebar_mouse_and_speed {
                 .iter()
                 .any(|p| p.id == agent.pane_id && p.window_active && p.pane_active)
         }));
+    }
+
+    #[test]
+    fn sidebars_notice_a_respawn_well_under_the_fallback_second() {
+        let t = TestServer::start();
+        let (ws, config, project) = up(&t);
+        let flag = config.path().join("ran-once");
+        let script = format!(
+            "test -e {flag} && exec sleep 1000; touch {flag}; exit 3",
+            flag = flag.display()
+        );
+        let agent = ws
+            .new_agent(
+                &project,
+                Some("crash"),
+                &["sh".to_string(), "-c".to_string(), script],
+            )
+            .unwrap();
+        let panes = t.server.list_panes().unwrap();
+        let home_sidebar = panes
+            .iter()
+            .find(|p| p.window_name == "home" && p.role == Some(Role::Sidebar))
+            .unwrap();
+        assert!(wait_until(
+            || screen(&t, &home_sidebar.id).contains("✗ crash")
+        ));
+        std::thread::sleep(Duration::from_millis(1100));
+
+        ws.respawn(&agent.pane_id).unwrap();
+
+        assert!(
+            within(Duration::from_millis(400), || screen(&t, &home_sidebar.id)
+                .contains("● crash")),
+            "{}",
+            screen(&t, &home_sidebar.id)
+        );
     }
 
     #[test]

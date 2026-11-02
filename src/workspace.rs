@@ -21,9 +21,8 @@ const CHANGE_HOOKS: &[&str] = &[
     "session-window-changed",
     "after-new-window",
     "after-kill-pane",
-    "after-kill-window",
+    "window-unlinked",
     "after-split-window",
-    "after-respawn-pane",
     "after-set-option",
     "pane-died",
     "pane-exited",
@@ -328,11 +327,12 @@ impl Workspace {
         Ok(())
     }
 
-    /// Runs a dead pane's original command again in the same pane.
+    /// Runs a dead pane's original command again in the same pane. No hook fires for
+    /// a respawn, so sidebars are woken explicitly.
     pub fn respawn(&self, pane_id: &str) -> Result<()> {
         self.server
             .run(&self.server.argv(["respawn-pane", "-t", pane_id]))?;
-        Ok(())
+        self.signal_change()
     }
 
     /// Closes an agent's window, sidebar included.
@@ -399,9 +399,8 @@ mod tests {
             "session-window-changed",
             "after-new-window",
             "after-kill-pane",
-            "after-kill-window",
+            "window-unlinked",
             "after-split-window",
-            "after-respawn-pane",
             "after-set-option",
             "pane-died",
             "pane-exited",
