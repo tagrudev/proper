@@ -22,6 +22,7 @@ const HELP: &[&str] = &[
     " Enter open agent",
     " n     new claude",
     " s     new shell",
+    " /     find project",
     " x     kill agent",
     " r     respawn dead",
     " q     detach",
@@ -41,6 +42,23 @@ pub fn render(frame: &mut Frame, state: &State, elapsed: Duration) {
 fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>> {
     match state.mode() {
         Mode::Help => HELP.iter().map(|h| Line::from(*h)).collect(),
+        Mode::Find => {
+            let query = Line::from(vec![" /".dim(), state.query().to_string().into()]);
+            let found = state.found();
+            if found.is_empty() {
+                return vec![query, Line::from(" no match").dim()];
+            }
+            let matches = found.into_iter().enumerate().map(|(index, project)| {
+                let text = format!(" {}", project.name);
+                let line = Line::from(format!("{text:<width$}", width = area.width as usize));
+                if index == state.pick() {
+                    line.bg(CURSOR)
+                } else {
+                    line
+                }
+            });
+            std::iter::once(query).chain(matches).collect()
+        }
         Mode::Normal | Mode::ConfirmKill if state.rows().is_empty() => {
             vec![
                 Line::from(" no projects yet").dim(),
@@ -124,13 +142,19 @@ fn footer_line(state: &State) -> Line<'static> {
     }
     match state.error() {
         Some(error) => Line::from(format!(" {error}")).red(),
+        None if state.mode() == Mode::Find => Line::from(vec![
+            " enter".into(),
+            " claude  ".dim(),
+            "esc".into(),
+            " cancel".dim(),
+        ]),
         None => {
             let leave = if state.in_tmux() { " detach" } else { " quit" };
             Line::from(vec![
                 " ?".into(),
                 " help  ".dim(),
-                "n".into(),
-                " claude  ".dim(),
+                "/".into(),
+                " find  ".dim(),
                 "q".into(),
                 leave.dim(),
             ])
@@ -187,13 +211,13 @@ mod tests {
         assert_eq!(out[0], " project");
         assert_eq!(out[1], " znaiko");
         assert_eq!(out[10], "");
-        assert_eq!(out[11], " ? help  n claude  q detach");
+        assert_eq!(out[11], " ? help  / find  q detach");
     }
 
     #[test]
     fn footer_says_quit_outside_tmux() {
         let state = State::new(tree(&["project"]), None);
-        assert_eq!(lines(&state)[11], " ? help  n claude  q quit");
+        assert_eq!(lines(&state)[11], " ? help  / find  q quit");
     }
 
     #[test]
@@ -233,9 +257,51 @@ mod tests {
             Input::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
         );
         let text = lines(&state).join("\n");
-        for key in ["j/k", "Enter", "n ", "s ", "x ", "r ", "q ", "Esc"] {
+        for key in ["j/k", "Enter", "n ", "s ", "/ ", "x ", "r ", "q ", "Esc"] {
             assert!(text.contains(key), "missing {key:?} in\n{text}");
         }
+    }
+
+    fn find(names: &[&str], text: &str) -> State {
+        let key = |c| Input::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let state = State::new(tree(names), Some("%1".into()));
+        let (state, _) = reduce(state, key('/'));
+        text.chars().fold(state, |state, c| reduce(state, key(c)).0)
+    }
+
+    #[test]
+    fn the_finder_shows_the_query_then_the_matches_and_how_to_use_them() {
+        let out = lines(&find(&["proper", "znaiko", "api"], "o"));
+        assert_eq!(out[0], " /o");
+        assert_eq!(out[1], " proper");
+        assert_eq!(out[2], " znaiko");
+        assert_eq!(out[3], "");
+        assert_eq!(out[11], " enter claude  esc cancel");
+    }
+
+    #[test]
+    fn the_pick_has_the_cursor_background_across_the_whole_width() {
+        let state = find(&["proper", "znaiko"], "");
+        let (state, _) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, Duration::ZERO))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(3, 2)].bg, CURSOR, "znaiko row");
+        assert_eq!(buffer[(29, 2)].bg, CURSOR, "znaiko row, right edge");
+        assert_ne!(buffer[(3, 1)].bg, CURSOR, "proper row");
+        assert_ne!(buffer[(3, 0)].bg, CURSOR, "query row");
+    }
+
+    #[test]
+    fn the_finder_says_when_nothing_matches() {
+        let out = lines(&find(&["proper"], "zzz"));
+        assert_eq!(out[0], " /zzz");
+        assert_eq!(out[1], " no match");
     }
 
     #[test]

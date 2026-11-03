@@ -547,6 +547,36 @@ mod sidebar_keys {
     }
 
     #[test]
+    fn slash_in_the_sidebar_finds_projects_by_their_letters() {
+        let t = TestServer::start();
+        let (_ws, _config, _project) = up(&t);
+        let sidebar = sidebar_of(&t.server.list_panes().unwrap(), "home");
+        let screen = || {
+            t.server
+                .run(&t.server.argv(["capture-pane", "-p", "-t", &sidebar.id]))
+                .unwrap()
+        };
+        assert!(wait_until(|| screen().contains("? help")), "{}", screen());
+
+        keys(&t, &sidebar.id, &["/", "p", "j"]);
+        assert!(
+            wait_until(|| screen().contains(" /pj\n project")),
+            "{}",
+            screen()
+        );
+        keys(&t, &sidebar.id, &["z"]);
+        assert!(wait_until(|| screen().contains("no match")), "{}", screen());
+        keys(&t, &sidebar.id, &["BSpace"]);
+        assert!(
+            wait_until(|| screen().contains(" /pj\n project")),
+            "{}",
+            screen()
+        );
+        keys(&t, &sidebar.id, &["Escape"]);
+        assert!(wait_until(|| screen().contains("? help")), "{}", screen());
+    }
+
+    #[test]
     fn s_in_the_sidebar_starts_a_shell_in_the_project() {
         let t = TestServer::start();
         let (_ws, _config, project) = up(&t);
