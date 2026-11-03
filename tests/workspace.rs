@@ -617,6 +617,73 @@ mod sidebar_keys {
                 .any(|p| p.window_id == shell.window_id && p.role == Some(Role::Sidebar))
         }));
     }
+
+    #[test]
+    fn w_in_the_sidebar_starts_claude_in_a_named_worktree_of_the_project() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TestServer::start();
+        let (ws, config, project) = up(&t);
+        // A claude that records its arguments and waits, first on the home sidebar's PATH.
+        // tmux gives a pane the PATH of the client that spawned it, so the sidebar is
+        // respawned through a client carrying that PATH.
+        let bin = config.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(
+            &claude,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\nexec sleep 1000\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        let sidebar = sidebar_of(&t.server.list_panes().unwrap(), "home");
+        let respawn = t.server.argv(["respawn-pane", "-k", "-t", &sidebar.id]);
+        let respawned = std::process::Command::new(&respawn[0])
+            .args(&respawn[1..])
+            .env("PATH", &path)
+            .status()
+            .unwrap();
+        assert!(respawned.success());
+        ws.new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        t.server
+            .run(&t.server.argv(["select-window", "-t", "proper:home"]))
+            .unwrap();
+        let screen = || {
+            t.server
+                .run(&t.server.argv(["capture-pane", "-p", "-t", &sidebar.id]))
+                .unwrap()
+        };
+        assert!(
+            wait_until(|| screen().contains(" project\n └ ● sleep")),
+            "{}",
+            screen()
+        );
+
+        keys(&t, &sidebar.id, &["w"]);
+        assert!(
+            wait_until(|| screen().contains(" worktree in project")),
+            "{}",
+            screen()
+        );
+        keys(&t, &sidebar.id, &["auth", "Enter"]);
+
+        let is_worktree = |p: &Pane| p.window_name == "project/auth" && p.role == Some(Role::Agent);
+        assert!(wait_until(|| {
+            t.server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .any(|p| is_worktree(p) && p.window_active && p.pane_active)
+        }));
+        let panes = t.server.list_panes().unwrap();
+        let agent = panes.iter().find(|p| is_worktree(p)).unwrap();
+        assert_eq!(agent.agent, "auth");
+        assert_eq!(agent.path, project.path.display().to_string());
+        assert!(wait_until(|| {
+            std::fs::read_to_string(bin.join("claude.args")).is_ok_and(|args| args == "-w\nauth\n")
+        }));
+    }
 }
 
 mod dead_agents {

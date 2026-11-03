@@ -27,6 +27,8 @@ pub enum Mode {
     /// Typing narrows the registered projects with nothing running; Enter starts claude in
     /// the picked one.
     Find,
+    /// Typing names a worktree; Enter starts claude in a new worktree of that project.
+    Worktree,
 }
 
 /// Mouse input already translated to sidebar rows; `row` is zero-based from the top.
@@ -46,10 +48,12 @@ pub enum Input {
     Focus(bool),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Program {
     Claude,
     Shell,
+    /// Claude in a new git worktree of that name.
+    Worktree(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +89,9 @@ pub struct State {
     query: String,
     /// Index into the finder's matches.
     pick: usize,
+    /// The project a worktree prompt starts claude in.
+    worktree_project: Option<ProjectRow>,
+    worktree_name: String,
 }
 
 impl State {
@@ -103,6 +110,8 @@ impl State {
             idle,
             query: String::new(),
             pick: 0,
+            worktree_project: None,
+            worktree_name: String::new(),
         }
     }
 
@@ -140,6 +149,14 @@ impl State {
 
     pub fn pick(&self) -> usize {
         self.pick
+    }
+
+    pub fn worktree_project(&self) -> Option<&ProjectRow> {
+        self.worktree_project.as_ref()
+    }
+
+    pub fn worktree_name(&self) -> &str {
+        &self.worktree_name
     }
 
     /// Idle projects whose names hold the letters of the query in order.
@@ -192,6 +209,16 @@ impl State {
     fn picked(self, delta: isize) -> State {
         let pick = stepped(self.pick, delta, self.found().len());
         State { pick, ..self }
+    }
+
+    /// Opens the worktree prompt for `project` with no name typed yet.
+    fn naming_worktree(self, project: ProjectRow) -> State {
+        State {
+            mode: Mode::Worktree,
+            worktree_project: Some(project),
+            worktree_name: String::new(),
+            ..self
+        }
     }
 }
 
@@ -275,6 +302,7 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
                 Mode::Help => (help_key(state, key), None),
                 Mode::ConfirmKill => confirm_kill_key(state, key),
                 Mode::Find => find_key(state, key),
+                Mode::Worktree => worktree_key(state, key),
                 Mode::Normal => normal_key(state, key),
             }
         }
@@ -366,33 +394,78 @@ fn find_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
             }
             None => (state, None),
         },
+        KeyCode::Tab => match state.found().get(state.pick) {
+            Some(project) => {
+                let project = (*project).clone();
+                (state.naming_worktree(project), None)
+            }
+            None => (state, None),
+        },
         KeyCode::Down => (state.picked(1), None),
         KeyCode::Up => (state.picked(-1), None),
+        _ => match edited(&state.query, key) {
+            Some(query) => (
+                State {
+                    query,
+                    pick: 0,
+                    ..state
+                },
+                None,
+            ),
+            None => (state, None),
+        },
+    }
+}
+
+fn worktree_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
+    match key.code {
+        KeyCode::Esc => (
+            State {
+                mode: Mode::Normal,
+                ..state
+            },
+            None,
+        ),
+        KeyCode::Enter if state.worktree_name.is_empty() => {
+            (state.with_error("name the worktree"), None)
+        }
+        KeyCode::Enter => {
+            let command = state.worktree_project.clone().map(|project| Command::New {
+                project,
+                program: Program::Worktree(state.worktree_name.clone()),
+            });
+            (
+                State {
+                    mode: Mode::Normal,
+                    ..state
+                },
+                command,
+            )
+        }
+        _ => match edited(&state.worktree_name, key) {
+            Some(worktree_name) => (
+                State {
+                    worktree_name,
+                    ..state
+                },
+                None,
+            ),
+            None => (state, None),
+        },
+    }
+}
+
+/// `text` after a typing key: Backspace takes back the last letter and a letter is added
+/// in lowercase. `None` for keys that do not type.
+fn edited(text: &str, key: KeyEvent) -> Option<String> {
+    match key.code {
         KeyCode::Backspace => {
-            let mut letters = state.query.chars();
+            let mut letters = text.chars();
             letters.next_back();
-            let query = letters.as_str().to_string();
-            (
-                State {
-                    query,
-                    pick: 0,
-                    ..state
-                },
-                None,
-            )
+            Some(letters.as_str().to_string())
         }
-        KeyCode::Char(letter) => {
-            let query = format!("{}{}", state.query, letter.to_ascii_lowercase());
-            (
-                State {
-                    query,
-                    pick: 0,
-                    ..state
-                },
-                None,
-            )
-        }
-        _ => (state, None),
+        KeyCode::Char(letter) => Some(format!("{text}{}", letter.to_ascii_lowercase())),
+        _ => None,
     }
 }
 
@@ -424,6 +497,10 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
             });
             (state, command)
         }
+        KeyCode::Char('w') => match state.project_at_cursor() {
+            Some(project) => (state.naming_worktree(project), None),
+            None => (state, None),
+        },
         KeyCode::Char('x') => match state.agent_at_cursor() {
             Some(_) => (
                 State {
@@ -1210,5 +1287,171 @@ mod finder_tests {
         assert_eq!(state.mode(), Mode::Find);
         assert_eq!(found(&state), ["proper", "zeta"]);
         assert_eq!(state.pick(), 1);
+    }
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    use super::*;
+    use crate::agents::{Agent, ProjectEntry};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn entry(name: &str, agents: Vec<Agent>) -> ProjectEntry {
+        ProjectEntry {
+            name: name.into(),
+            path: PathBuf::from(format!("/p/{name}")),
+            registered: true,
+            agents,
+        }
+    }
+
+    /// `project` runs one claude; `znaiko` and `todor.dev` are idle.
+    fn tree() -> Tree {
+        Tree {
+            projects: vec![
+                entry(
+                    "project",
+                    vec![Agent {
+                        name: "claude".into(),
+                        project: "project".into(),
+                        pane_id: "%2".into(),
+                        window_id: "@2".into(),
+                        current: false,
+                        dead: None,
+                        command: "claude".into(),
+                        status: None,
+                    }],
+                ),
+                entry("znaiko", vec![]),
+                entry("todor.dev", vec![]),
+            ],
+        }
+    }
+
+    fn press(state: State, code: KeyCode) -> (State, Option<Command>) {
+        reduce(state, Input::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    fn typed(state: State, text: &str) -> State {
+        text.chars()
+            .fold(state, |state, c| press(state, KeyCode::Char(c)).0)
+    }
+
+    /// The prompt opened with `w` on the agent row of `project`.
+    fn prompt() -> State {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('j')).0;
+        press(state, KeyCode::Char('w')).0
+    }
+
+    fn project_row(name: &str) -> ProjectRow {
+        ProjectRow {
+            name: name.into(),
+            path: PathBuf::from(format!("/p/{name}")),
+            registered: true,
+        }
+    }
+
+    #[test]
+    fn w_asks_for_a_worktree_name_for_the_project_under_the_cursor() {
+        let state = prompt();
+        assert_eq!(state.mode(), Mode::Worktree);
+        assert_eq!(state.worktree_project(), Some(&project_row("project")));
+        assert_eq!(state.worktree_name(), "");
+    }
+
+    #[test]
+    fn w_with_no_rows_does_nothing() {
+        let (state, command) = press(
+            State::new(Tree::default(), Some("%1".into())),
+            KeyCode::Char('w'),
+        );
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn typing_names_the_worktree_in_lowercase_and_backspace_takes_back_a_letter() {
+        let state = typed(prompt(), "AUTH-fixx");
+        let (state, _) = press(state, KeyCode::Backspace);
+        assert_eq!(state.worktree_name(), "auth-fix");
+        let state = typed(prompt(), "jkqxnsrw/?");
+        assert_eq!(state.mode(), Mode::Worktree);
+        assert_eq!(state.worktree_name(), "jkqxnsrw/?");
+    }
+
+    #[test]
+    fn enter_starts_claude_in_a_worktree_of_that_project_and_closes_the_prompt() {
+        let (state, command) = press(typed(prompt(), "auth-fix"), KeyCode::Enter);
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("project"),
+                program: Program::Worktree("auth-fix".into())
+            })
+        );
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn enter_without_a_name_stays_in_the_prompt_and_says_so() {
+        let (state, command) = press(prompt(), KeyCode::Enter);
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Worktree);
+        assert_eq!(state.error(), Some("name the worktree"));
+    }
+
+    #[test]
+    fn esc_cancels_and_reopening_starts_without_a_name() {
+        let (state, command) = press(typed(prompt(), "auth"), KeyCode::Esc);
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Normal);
+        let (state, _) = press(state, KeyCode::Char('w'));
+        assert_eq!(state.mode(), Mode::Worktree);
+        assert_eq!(state.worktree_name(), "");
+    }
+
+    #[test]
+    fn a_click_closes_the_prompt() {
+        assert_eq!(prompt().mode(), Mode::Worktree);
+        let (state, command) = reduce(prompt(), Input::Mouse(Mouse::Click { row: 0 }));
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn tab_in_the_finder_asks_for_a_worktree_name_for_the_picked_project() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('/')).0;
+        let (state, _) = press(state, KeyCode::Down);
+        let (state, command) = press(state, KeyCode::Tab);
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Worktree);
+        assert_eq!(state.worktree_project(), Some(&project_row("todor.dev")));
+        assert_eq!(state.worktree_name(), "");
+        let (_, command) = press(typed(state, "auth"), KeyCode::Enter);
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("todor.dev"),
+                program: Program::Worktree("auth".into())
+            })
+        );
+    }
+
+    #[test]
+    fn tab_in_the_finder_with_nothing_matching_does_nothing() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('/')).0;
+        let (state, command) = press(typed(state, "zzz"), KeyCode::Tab);
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Find);
+    }
+
+    #[test]
+    fn the_prompt_keeps_its_project_when_a_snapshot_takes_it_out_of_the_finder() {
+        let state = press(State::new(tree(), Some("%1".into())), KeyCode::Char('/')).0;
+        let (state, _) = press(state, KeyCode::Tab);
+        let (state, _) = reduce(state, Input::Snapshot(Tree::default()));
+        assert_eq!(state.mode(), Mode::Worktree);
+        assert_eq!(state.worktree_project(), Some(&project_row("znaiko")));
     }
 }

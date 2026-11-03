@@ -170,13 +170,18 @@ impl Sidebar {
                     name: project.name.clone(),
                     path: project.path.clone(),
                 };
-                let command = match program {
-                    Program::Claude => vec!["claude".to_string()],
-                    Program::Shell => {
-                        vec![std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())]
-                    }
+                let (name, command) = match program {
+                    Program::Claude => (None, vec!["claude".to_string()]),
+                    Program::Shell => (
+                        None,
+                        vec![std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())],
+                    ),
+                    Program::Worktree(worktree) => (
+                        Some(worktree.as_str()),
+                        vec!["claude".to_string(), "-w".to_string(), worktree.clone()],
+                    ),
                 };
-                self.workspace.new_agent(&project, None, &command)?;
+                self.workspace.new_agent(&project, name, &command)?;
                 Ok(Flow::Continue)
             }
             Command::Detach => {
