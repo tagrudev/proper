@@ -579,25 +579,34 @@ mod sidebar_keys {
     #[test]
     fn s_in_the_sidebar_starts_a_shell_in_the_project() {
         let t = TestServer::start();
-        let (_ws, _config, project) = up(&t);
+        let (ws, _config, project) = up(&t);
+        let sleeper = ws
+            .new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        t.server
+            .run(&t.server.argv(["select-window", "-t", "proper:home"]))
+            .unwrap();
         let sidebar = sidebar_of(&t.server.list_panes().unwrap(), "home");
         assert!(wait_until(|| t
             .server
             .run(&t.server.argv(["capture-pane", "-p", "-t", &sidebar.id]))
             .unwrap()
-            .contains("project")));
+            .contains(" project\n └ ● sleep")));
 
         keys(&t, &sidebar.id, &["s"]);
 
+        let is_shell = |p: &Pane| {
+            p.role == Some(Role::Agent) && p.project == "project" && p.id != sleeper.pane_id
+        };
         assert!(wait_until(|| {
             t.server
                 .list_panes()
                 .unwrap()
                 .iter()
-                .any(|p| p.role == Some(Role::Agent) && p.project == "project" && p.window_active)
+                .any(|p| is_shell(p) && p.window_active)
         }));
         let panes = t.server.list_panes().unwrap();
-        let shell = panes.iter().find(|p| p.role == Some(Role::Agent)).unwrap();
+        let shell = panes.iter().find(|p| is_shell(p)).unwrap();
         assert_eq!(shell.path, project.path.display().to_string());
         assert!(shell.pane_active, "focus moved into the new shell");
         assert!(wait_until(|| {

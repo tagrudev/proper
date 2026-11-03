@@ -129,6 +129,10 @@ impl State {
         self.focused
     }
 
+    pub fn projects(&self) -> &[ProjectRow] {
+        &self.projects
+    }
+
     pub fn query(&self) -> &str {
         &self.query
     }
@@ -208,9 +212,11 @@ fn registered(tree: &Tree) -> Vec<ProjectRow> {
         .collect()
 }
 
+/// Projects with agents, each followed by its agents; projects with none get no row.
 fn rows(tree: Tree) -> Vec<Row> {
     tree.projects
         .into_iter()
+        .filter(|project| !project.agents.is_empty())
         .flat_map(|project| {
             let header = Row::Project(ProjectRow {
                 name: project.name,
@@ -471,19 +477,30 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::ProjectEntry;
+    use crate::agents::{Agent, ProjectEntry};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 
+    /// Each project runs one claude, so each gets a row.
     fn tree(names: &[&str]) -> Tree {
         Tree {
             projects: names
                 .iter()
-                .map(|n| ProjectEntry {
+                .enumerate()
+                .map(|(index, n)| ProjectEntry {
                     name: n.to_string(),
                     path: PathBuf::from(format!("/p/{n}")),
                     registered: true,
-                    agents: vec![],
+                    agents: vec![Agent {
+                        name: "claude".into(),
+                        project: n.to_string(),
+                        pane_id: format!("%{}", index + 2),
+                        window_id: format!("@{}", index + 2),
+                        current: false,
+                        dead: None,
+                        command: "claude".into(),
+                        status: None,
+                    }],
                 })
                 .collect(),
         }
@@ -505,11 +522,12 @@ mod tests {
     }
 
     #[test]
-    fn starts_with_one_row_per_project_and_the_cursor_on_the_first() {
+    fn starts_with_each_project_above_its_agent_and_the_cursor_on_the_first() {
         let state = inside_tmux();
-        assert_eq!(state.rows().len(), 3);
+        assert_eq!(state.rows().len(), 6);
         assert_eq!(state.cursor(), 0);
         assert!(matches!(state.rows()[0], Row::Project(ref p) if p.name == "project"));
+        assert!(matches!(state.rows()[1], Row::Agent(ref a) if a.project == "project"));
     }
 
     #[test]
@@ -519,10 +537,10 @@ mod tests {
         let (state, _) = press(state, KeyCode::Char('j'));
         let (state, _) = press(state, KeyCode::Down);
         assert_eq!(state.cursor(), 2);
-        let (state, _) = press(state, KeyCode::Char('j'));
-        assert_eq!(state.cursor(), 2);
+        let state = (0..4).fold(state, |state, _| press(state, KeyCode::Char('j')).0);
+        assert_eq!(state.cursor(), 5);
         let (state, _) = press(state, KeyCode::Up);
-        assert_eq!(state.cursor(), 1);
+        assert_eq!(state.cursor(), 4);
     }
 
     #[test]
@@ -565,8 +583,8 @@ mod tests {
         assert_eq!(state.cursor(), 2);
         let (state, command) = reduce(state, Input::Snapshot(tree(&["only"])));
         assert_eq!(command, None);
-        assert_eq!(state.rows().len(), 1);
-        assert_eq!(state.cursor(), 0);
+        assert_eq!(state.rows().len(), 2);
+        assert_eq!(state.cursor(), 1);
     }
 
     #[test]
@@ -640,19 +658,36 @@ mod agent_tests {
                         agent("project", "zsh", "%3"),
                     ],
                 ),
-                project("znaiko", vec![]),
+                project("znaiko", vec![agent("znaiko", "claude", "%4")]),
             ],
         }
+    }
+
+    #[test]
+    fn projects_without_agents_get_no_row_but_stay_findable() {
+        let tree = Tree {
+            projects: vec![
+                project("idle", vec![]),
+                project("busy", vec![agent("busy", "claude", "%2")]),
+            ],
+        };
+        let state = State::new(tree, Some("%1".into()));
+        assert_eq!(state.rows().len(), 2);
+        assert!(matches!(&state.rows()[0], Row::Project(p) if p.name == "busy"));
+        assert!(matches!(&state.rows()[1], Row::Agent(a) if a.pane_id == "%2"));
+        let names: Vec<&str> = state.projects().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["idle", "busy"]);
     }
 
     #[test]
     fn agents_are_rows_right_under_their_project() {
         let state = State::new(tree(), Some("%1".into()));
         let rows = state.rows();
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5);
         assert!(matches!(&rows[1], Row::Agent(a) if a.name == "claude"));
         assert!(matches!(&rows[2], Row::Agent(a) if a.name == "zsh"));
         assert!(matches!(&rows[3], Row::Project(p) if p.name == "znaiko"));
+        assert!(matches!(&rows[4], Row::Agent(a) if a.project == "znaiko"));
     }
 
     #[test]
@@ -692,7 +727,10 @@ mod agent_tests {
         let (state, _) = reduce(
             state,
             Input::Snapshot(Tree {
-                projects: vec![project("znaiko", vec![]), project("project", vec![])],
+                projects: vec![
+                    project("znaiko", vec![agent("znaiko", "claude", "%4")]),
+                    project("project", vec![agent("project", "claude", "%2")]),
+                ],
             }),
         );
         assert_eq!(state.cursor(), 0);
@@ -959,10 +997,10 @@ mod agent_tests {
         let (state, _) = reduce(
             state,
             Input::Snapshot(Tree {
-                projects: vec![project("project", vec![])],
+                projects: vec![project("project", vec![agent("project", "claude", "%2")])],
             }),
         );
-        assert_eq!(state.cursor(), 0);
+        assert_eq!(state.cursor(), 1);
     }
 }
 
