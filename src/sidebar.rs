@@ -24,7 +24,8 @@ pub enum Mode {
     Normal,
     Help,
     ConfirmKill,
-    /// Typing narrows the registered projects; Enter starts claude in the picked one.
+    /// Typing narrows the registered projects with nothing running; Enter starts claude in
+    /// the picked one.
     Find,
 }
 
@@ -79,8 +80,8 @@ pub struct State {
     error: Option<String>,
     own_pane: Option<String>,
     focused: bool,
-    /// Registered projects, the finder's choices.
-    projects: Vec<ProjectRow>,
+    /// Registered projects with no agents, the finder's choices.
+    idle: Vec<ProjectRow>,
     query: String,
     /// Index into the finder's matches.
     pick: usize,
@@ -89,7 +90,7 @@ pub struct State {
 impl State {
     /// `own_pane` is the sidebar's own tmux pane id; `None` means running outside tmux.
     pub fn new(tree: Tree, own_pane: Option<String>) -> State {
-        let projects = registered(&tree);
+        let idle = idle_projects(&tree);
         let rows = rows(tree);
         let cursor = current_agent(&rows).unwrap_or(0);
         State {
@@ -99,7 +100,7 @@ impl State {
             error: None,
             own_pane,
             focused: true,
-            projects,
+            idle,
             query: String::new(),
             pick: 0,
         }
@@ -129,8 +130,8 @@ impl State {
         self.focused
     }
 
-    pub fn projects(&self) -> &[ProjectRow] {
-        &self.projects
+    pub fn idle(&self) -> &[ProjectRow] {
+        &self.idle
     }
 
     pub fn query(&self) -> &str {
@@ -141,9 +142,9 @@ impl State {
         self.pick
     }
 
-    /// Registered projects whose names hold the letters of the query in order.
+    /// Idle projects whose names hold the letters of the query in order.
     pub fn found(&self) -> Vec<&ProjectRow> {
-        self.projects
+        self.idle
             .iter()
             .filter(|project| {
                 let mut letters = project.name.chars();
@@ -200,10 +201,10 @@ fn stepped(index: usize, delta: isize, len: usize) -> usize {
     (index as isize + delta).clamp(0, last) as usize
 }
 
-fn registered(tree: &Tree) -> Vec<ProjectRow> {
+fn idle_projects(tree: &Tree) -> Vec<ProjectRow> {
     tree.projects
         .iter()
-        .filter(|project| project.registered)
+        .filter(|project| project.registered && project.agents.is_empty())
         .map(|project| ProjectRow {
             name: project.name.clone(),
             path: project.path.clone(),
@@ -245,7 +246,7 @@ fn same_row(a: &Row, b: &Row) -> bool {
 pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
     match input {
         Input::Snapshot(tree) => {
-            let projects = registered(&tree);
+            let idle = idle_projects(&tree);
             let rows = rows(tree);
             let newly_current =
                 current_agent(&rows).filter(|now| current_agent(&state.rows) != Some(*now));
@@ -259,7 +260,7 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
             let state = State {
                 rows,
                 cursor,
-                projects,
+                idle,
                 ..state
             };
             (state.picked(0), None)
@@ -675,8 +676,8 @@ mod agent_tests {
         assert_eq!(state.rows().len(), 2);
         assert!(matches!(&state.rows()[0], Row::Project(p) if p.name == "busy"));
         assert!(matches!(&state.rows()[1], Row::Agent(a) if a.pane_id == "%2"));
-        let names: Vec<&str> = state.projects().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["idle", "busy"]);
+        let names: Vec<&str> = state.idle().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["idle"]);
     }
 
     #[test]
@@ -1007,7 +1008,7 @@ mod agent_tests {
 #[cfg(test)]
 mod finder_tests {
     use super::*;
-    use crate::agents::ProjectEntry;
+    use crate::agents::{Agent, ProjectEntry};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 
@@ -1160,6 +1161,35 @@ mod finder_tests {
         let (state, command) = reduce(finder(&["proper"]), Input::Mouse(Mouse::Click { row: 0 }));
         assert_eq!(command, None);
         assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn the_finder_leaves_out_projects_that_already_have_agents() {
+        let busy = |name: &str| ProjectEntry {
+            agents: vec![Agent {
+                name: "claude".into(),
+                project: name.into(),
+                pane_id: "%2".into(),
+                window_id: "@2".into(),
+                current: false,
+                dead: None,
+                command: "claude".into(),
+                status: None,
+            }],
+            ..entry(name, true)
+        };
+        let tree = Tree {
+            projects: vec![busy("proper"), entry("znaiko", true)],
+        };
+        let (state, _) = press(State::new(tree, Some("%1".into())), KeyCode::Char('/'));
+        assert_eq!(found(&state), ["znaiko"]);
+        let (state, _) = reduce(
+            state,
+            Input::Snapshot(Tree {
+                projects: vec![entry("proper", true), busy("znaiko")],
+            }),
+        );
+        assert_eq!(found(&state), ["proper"]);
     }
 
     #[test]

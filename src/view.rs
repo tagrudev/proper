@@ -59,7 +59,7 @@ fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>
             });
             std::iter::once(query).chain(matches).collect()
         }
-        Mode::Normal | Mode::ConfirmKill if state.projects().is_empty() => {
+        Mode::Normal | Mode::ConfirmKill if state.rows().is_empty() && state.idle().is_empty() => {
             vec![
                 Line::from(" no projects yet").dim(),
                 Line::from(" run: proper add <dir>").dim(),
@@ -280,9 +280,20 @@ mod tests {
         }
     }
 
+    /// The finder opened on idle projects named `names`, with `text` typed.
     fn find(names: &[&str], text: &str) -> State {
         let key = |c| Input::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-        let state = State::new(tree(names), Some("%1".into()));
+        let idle = Tree {
+            projects: tree(names)
+                .projects
+                .into_iter()
+                .map(|project| ProjectEntry {
+                    agents: vec![],
+                    ..project
+                })
+                .collect(),
+        };
+        let state = State::new(idle, Some("%1".into()));
         let (state, _) = reduce(state, key('/'));
         text.chars().fold(state, |state, c| reduce(state, key(c)).0)
     }

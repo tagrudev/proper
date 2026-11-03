@@ -62,15 +62,15 @@ In the sidebar:
 | `Enter`   | open the agent under the cursor               |
 | `n`       | start claude in the project under the cursor  |
 | `s`       | start `$SHELL` in the project under the cursor|
-| `/`       | find a project and start claude in it         |
+| `/`       | find an idle project and start claude in it   |
 | `x`       | kill the agent under the cursor (asks first)  |
 | `r`       | respawn a dead agent in its pane              |
 | `q`       | detach                                        |
 | `?`       | help                                          |
 
-In the finder, typing keeps the registered projects whose names hold the
-letters in order (`tdv` finds `todor.dev`), `↑` / `↓` pick one, `Enter`
-starts claude in it and `Esc` closes the finder.
+The finder lists the registered projects with nothing running. Typing keeps
+those whose names hold the letters in order (`tdv` finds `todor.dev`), `↑` /
+`↓` pick one, `Enter` starts claude in it and `Esc` closes the finder.
 
 With the mouse: click an agent row to open it, click a project row to move the
 cursor, and the wheel scrolls the list.
