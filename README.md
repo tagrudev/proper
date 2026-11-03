@@ -62,6 +62,7 @@ In the sidebar:
 | `Enter`   | open the agent under the cursor               |
 | `n`       | start claude in the project under the cursor  |
 | `s`       | start `$SHELL` in the project under the cursor|
+| `w`       | start claude in a new worktree (asks its name)|
 | `/`       | find an idle project and start claude in it   |
 | `x`       | kill the agent under the cursor (asks first)  |
 | `r`       | respawn a dead agent in its pane              |
@@ -70,7 +71,13 @@ In the sidebar:
 
 The finder lists the registered projects with nothing running. Typing keeps
 those whose names hold the letters in order (`tdv` finds `todor.dev`), `↑` /
-`↓` pick one, `Enter` starts claude in it and `Esc` closes the finder.
+`↓` pick one, `Enter` starts claude in it and `Esc` closes the finder. `Tab`
+asks for a worktree name instead, as `w` does.
+
+`w` asks for a worktree name, then runs `claude -w <name>` in the project
+under the cursor, and Claude Code creates that git worktree and works in it.
+The agent takes the worktree's name, so its window is `project/<name>`.
+`Enter` starts it, `Esc` cancels, and an empty name is refused.
 
 With the mouse: click an agent row to open it, click a project row to move the
 cursor, and the wheel scrolls the list.

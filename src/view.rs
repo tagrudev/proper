@@ -22,6 +22,7 @@ const HELP: &[&str] = &[
     " Enter open agent",
     " n     new claude",
     " s     new shell",
+    " w     new worktree",
     " /     find project",
     " x     kill agent",
     " r     respawn dead",
@@ -42,6 +43,19 @@ pub fn render(frame: &mut Frame, state: &State, elapsed: Duration) {
 fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>> {
     match state.mode() {
         Mode::Help => HELP.iter().map(|h| Line::from(*h)).collect(),
+        Mode::Worktree => {
+            let project = state
+                .worktree_project()
+                .map(|project| project.name.clone())
+                .unwrap_or_default();
+            vec![
+                Line::from(vec![" worktree in ".dim(), project.into()]),
+                Line::from(vec![
+                    " name: ".dim(),
+                    state.worktree_name().to_string().into(),
+                ]),
+            ]
+        }
         Mode::Find => {
             let query = Line::from(vec![" /".dim(), state.query().to_string().into()]);
             let found = state.found();
@@ -151,6 +165,12 @@ fn footer_line(state: &State) -> Line<'static> {
         None if state.mode() == Mode::Find => Line::from(vec![
             " enter".into(),
             " claude  ".dim(),
+            "tab".into(),
+            " worktree".dim(),
+        ]),
+        None if state.mode() == Mode::Worktree => Line::from(vec![
+            " enter".into(),
+            " start  ".dim(),
             "esc".into(),
             " cancel".dim(),
         ]),
@@ -275,7 +295,9 @@ mod tests {
             Input::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
         );
         let text = lines(&state).join("\n");
-        for key in ["j/k", "Enter", "n ", "s ", "/ ", "x ", "r ", "q ", "Esc"] {
+        for key in [
+            "j/k", "Enter", "n ", "s ", " w ", "/ ", "x ", "r ", "q ", "Esc",
+        ] {
             assert!(text.contains(key), "missing {key:?} in\n{text}");
         }
     }
@@ -305,7 +327,32 @@ mod tests {
         assert_eq!(out[1], " proper");
         assert_eq!(out[2], " znaiko");
         assert_eq!(out[3], "");
-        assert_eq!(out[11], " enter claude  esc cancel");
+        assert_eq!(out[11], " enter claude  tab worktree");
+    }
+
+    /// The worktree prompt opened on `project` with `keys` pressed.
+    fn worktree(keys: &[KeyCode]) -> State {
+        let key = |code| Input::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let state = State::new(tree(&["project"]), Some("%1".into()));
+        let (state, _) = reduce(state, key(KeyCode::Char('w')));
+        keys.iter()
+            .fold(state, |state, code| reduce(state, key(*code)).0)
+    }
+
+    #[test]
+    fn the_worktree_prompt_names_the_project_then_the_name_typed_so_far() {
+        let out = lines(&worktree(&[KeyCode::Char('a'), KeyCode::Char('b')]));
+        assert_eq!(out[0], " worktree in project");
+        assert_eq!(out[1], " name: ab");
+        assert_eq!(out[2], "");
+        assert_eq!(out[11], " enter start  esc cancel");
+    }
+
+    #[test]
+    fn the_worktree_prompt_says_when_it_needs_a_name() {
+        let out = lines(&worktree(&[KeyCode::Enter]));
+        assert_eq!(out[0], " worktree in project");
+        assert_eq!(out[11], " name the worktree");
     }
 
     #[test]
