@@ -3,8 +3,8 @@
 A tmux workspace for you and your coding agents.
 
 proper runs its own tmux server with one session. Every agent gets a window
-made of two panes: a sidebar on the left listing your projects and the agents
-running in each, and the agent itself on the right. The sidebar is a real tmux
+made of two panes: a sidebar on the left listing the agents running in each
+of your projects, and the agent itself on the right. The sidebar is a real tmux
 pane, the agent is a real tmux pane, so scrollback, mouse, colours and resizing
 all come from tmux. Quitting proper only detaches; the agents keep running and
 `proper` brings you back to them.
@@ -62,10 +62,15 @@ In the sidebar:
 | `Enter`   | open the agent under the cursor               |
 | `n`       | start claude in the project under the cursor  |
 | `s`       | start `$SHELL` in the project under the cursor|
+| `/`       | find a project and start claude in it         |
 | `x`       | kill the agent under the cursor (asks first)  |
 | `r`       | respawn a dead agent in its pane              |
 | `q`       | detach                                        |
 | `?`       | help                                          |
+
+In the finder, typing keeps the registered projects whose names hold the
+letters in order (`tdv` finds `todor.dev`), `↑` / `↓` pick one, `Enter`
+starts claude in it and `Esc` closes the finder.
 
 With the mouse: click an agent row to open it, click a project row to move the
 cursor, and the wheel scrolls the list.
@@ -76,7 +81,7 @@ while the sidebar has focus and goes plain when the agent does. `M-Tab` needs
 your terminal to send Option as Meta (iTerm2: "Esc+", Terminal.app: "Use
 Option as Meta key", Ghostty: `macos-option-as-alt`).
 
-Projects with agents are bold, empty ones dim. Agents hang under their
+A project shows, in bold, only while it has agents. Agents hang under their
 project as `├ ● name command`; the command shows only when it differs from
 the name. A crashed agent reads `✗ name exit 3` (or `signal kill`) in red.
 Agents that report their state (see below) spin in green while working,

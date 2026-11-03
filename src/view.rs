@@ -22,6 +22,7 @@ const HELP: &[&str] = &[
     " Enter open agent",
     " n     new claude",
     " s     new shell",
+    " /     find project",
     " x     kill agent",
     " r     respawn dead",
     " q     detach",
@@ -41,10 +42,33 @@ pub fn render(frame: &mut Frame, state: &State, elapsed: Duration) {
 fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>> {
     match state.mode() {
         Mode::Help => HELP.iter().map(|h| Line::from(*h)).collect(),
-        Mode::Normal | Mode::ConfirmKill if state.rows().is_empty() => {
+        Mode::Find => {
+            let query = Line::from(vec![" /".dim(), state.query().to_string().into()]);
+            let found = state.found();
+            if found.is_empty() {
+                return vec![query, Line::from(" no match").dim()];
+            }
+            let matches = found.into_iter().enumerate().map(|(index, project)| {
+                let text = format!(" {}", project.name);
+                let line = Line::from(format!("{text:<width$}", width = area.width as usize));
+                if index == state.pick() {
+                    line.bg(CURSOR)
+                } else {
+                    line
+                }
+            });
+            std::iter::once(query).chain(matches).collect()
+        }
+        Mode::Normal | Mode::ConfirmKill if state.projects().is_empty() => {
             vec![
                 Line::from(" no projects yet").dim(),
                 Line::from(" run: proper add <dir>").dim(),
+            ]
+        }
+        Mode::Normal | Mode::ConfirmKill if state.rows().is_empty() => {
+            vec![
+                Line::from(" nothing running").dim(),
+                Line::from(" / finds a project").dim(),
             ]
         }
         Mode::Normal | Mode::ConfirmKill => {
@@ -65,15 +89,15 @@ fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>
     }
 }
 
-/// `next_is_agent` tells a project that it has agents and an agent that more follow it.
+/// `next_is_agent` tells an agent that more follow it.
 /// Rows are padded to `width` so the cursor background spans the pane.
 fn row_line(row: &Row, next_is_agent: bool, width: u16, elapsed: Duration) -> Line<'static> {
     match row {
         Row::Project(project) => {
-            let (mark, style) = match (project.registered, next_is_agent) {
-                (false, _) => ("*", Style::new().dim()),
-                (true, true) => ("", Style::new().bold()),
-                (true, false) => ("", Style::new().dim()),
+            let (mark, style) = if project.registered {
+                ("", Style::new().bold())
+            } else {
+                ("*", Style::new().dim())
             };
             let text = format!(" {}{mark}", project.name);
             Line::styled(format!("{text:<width$}", width = width as usize), style)
@@ -124,13 +148,19 @@ fn footer_line(state: &State) -> Line<'static> {
     }
     match state.error() {
         Some(error) => Line::from(format!(" {error}")).red(),
+        None if state.mode() == Mode::Find => Line::from(vec![
+            " enter".into(),
+            " claude  ".dim(),
+            "esc".into(),
+            " cancel".dim(),
+        ]),
         None => {
             let leave = if state.in_tmux() { " detach" } else { " quit" };
             Line::from(vec![
                 " ?".into(),
                 " help  ".dim(),
-                "n".into(),
-                " claude  ".dim(),
+                "/".into(),
+                " find  ".dim(),
                 "q".into(),
                 leave.dim(),
             ])
@@ -141,7 +171,7 @@ fn footer_line(state: &State) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::{ProjectEntry, Tree};
+    use crate::agents::{Agent, ProjectEntry, Tree};
     use crate::sidebar::{Input, State, reduce};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -149,15 +179,26 @@ mod tests {
     use ratatui::style::Modifier;
     use std::path::PathBuf;
 
+    /// Each project runs one claude, so each gets a row.
     fn tree(names: &[&str]) -> Tree {
         Tree {
             projects: names
                 .iter()
-                .map(|n| ProjectEntry {
+                .enumerate()
+                .map(|(index, n)| ProjectEntry {
                     name: n.to_string(),
                     path: PathBuf::from(format!("/p/{n}")),
                     registered: true,
-                    agents: vec![],
+                    agents: vec![Agent {
+                        name: "claude".into(),
+                        project: n.to_string(),
+                        pane_id: format!("%{}", index + 2),
+                        window_id: format!("@{}", index + 2),
+                        current: false,
+                        dead: None,
+                        command: "claude".into(),
+                        status: None,
+                    }],
                 })
                 .collect(),
         }
@@ -185,33 +226,34 @@ mod tests {
         let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
         let out = lines(&state);
         assert_eq!(out[0], " project");
-        assert_eq!(out[1], " znaiko");
+        assert_eq!(out[1], " └ ● claude");
+        assert_eq!(out[2], " znaiko");
+        assert_eq!(out[3], " └ ● claude");
         assert_eq!(out[10], "");
-        assert_eq!(out[11], " ? help  n claude  q detach");
+        assert_eq!(out[11], " ? help  / find  q detach");
     }
 
     #[test]
     fn footer_says_quit_outside_tmux() {
         let state = State::new(tree(&["project"]), None);
-        assert_eq!(lines(&state)[11], " ? help  n claude  q quit");
+        assert_eq!(lines(&state)[11], " ? help  / find  q quit");
     }
 
     #[test]
     fn the_cursor_row_has_a_soft_background_across_the_whole_width() {
+        let j = || Input::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         let state = State::new(tree(&["project", "znaiko"]), Some("%1".into()));
-        let (state, _) = reduce(
-            state,
-            Input::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
-        );
+        let (state, _) = reduce(state, j());
+        let (state, _) = reduce(state, j());
         let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
         terminal
             .draw(|frame| render(frame, &state, Duration::ZERO))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 1)].bg, CURSOR, "znaiko row");
-        assert_eq!(buffer[(29, 1)].bg, CURSOR, "znaiko row, right edge");
+        assert_eq!(buffer[(3, 2)].bg, CURSOR, "znaiko row");
+        assert_eq!(buffer[(29, 2)].bg, CURSOR, "znaiko row, right edge");
         assert_ne!(buffer[(3, 0)].bg, CURSOR, "project row");
-        assert!(!buffer[(3, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!buffer[(3, 2)].modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -233,15 +275,72 @@ mod tests {
             Input::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
         );
         let text = lines(&state).join("\n");
-        for key in ["j/k", "Enter", "n ", "s ", "x ", "r ", "q ", "Esc"] {
+        for key in ["j/k", "Enter", "n ", "s ", "/ ", "x ", "r ", "q ", "Esc"] {
             assert!(text.contains(key), "missing {key:?} in\n{text}");
         }
+    }
+
+    fn find(names: &[&str], text: &str) -> State {
+        let key = |c| Input::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let state = State::new(tree(names), Some("%1".into()));
+        let (state, _) = reduce(state, key('/'));
+        text.chars().fold(state, |state, c| reduce(state, key(c)).0)
+    }
+
+    #[test]
+    fn the_finder_shows_the_query_then_the_matches_and_how_to_use_them() {
+        let out = lines(&find(&["proper", "znaiko", "api"], "o"));
+        assert_eq!(out[0], " /o");
+        assert_eq!(out[1], " proper");
+        assert_eq!(out[2], " znaiko");
+        assert_eq!(out[3], "");
+        assert_eq!(out[11], " enter claude  esc cancel");
+    }
+
+    #[test]
+    fn the_pick_has_the_cursor_background_across_the_whole_width() {
+        let state = find(&["proper", "znaiko"], "");
+        let (state, _) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, Duration::ZERO))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(3, 2)].bg, CURSOR, "znaiko row");
+        assert_eq!(buffer[(29, 2)].bg, CURSOR, "znaiko row, right edge");
+        assert_ne!(buffer[(3, 1)].bg, CURSOR, "proper row");
+        assert_ne!(buffer[(3, 0)].bg, CURSOR, "query row");
+    }
+
+    #[test]
+    fn the_finder_says_when_nothing_matches() {
+        let out = lines(&find(&["proper"], "zzz"));
+        assert_eq!(out[0], " /zzz");
+        assert_eq!(out[1], " no match");
     }
 
     #[test]
     fn errors_replace_the_footer() {
         let state = State::new(tree(&["project"]), None).with_error("boom");
         assert_eq!(lines(&state)[11], " boom");
+    }
+
+    #[test]
+    fn with_nothing_running_the_sidebar_points_at_the_finder() {
+        let tree = Tree {
+            projects: vec![ProjectEntry {
+                name: "project".into(),
+                path: PathBuf::from("/p/project"),
+                registered: true,
+                agents: vec![],
+            }],
+        };
+        let out = lines(&State::new(tree, Some("%1".into())));
+        assert_eq!(out[0], " nothing running");
+        assert_eq!(out[1], " / finds a project");
     }
 
     #[test]
@@ -386,7 +485,7 @@ mod agent_tests {
     }
 
     #[test]
-    fn projects_with_agents_are_bold_and_empty_ones_dim() {
+    fn projects_without_agents_are_left_out_and_the_rest_are_bold() {
         let tree = Tree {
             projects: vec![
                 ProjectEntry {
@@ -403,9 +502,13 @@ mod agent_tests {
                 },
             ],
         };
-        let buffer = buffer(&State::new(tree, Some("%1".into())), Duration::ZERO);
+        let state = State::new(tree, Some("%1".into()));
+        let out = lines(&state);
+        assert_eq!(out[0], " busy");
+        assert_eq!(out[1], " └ ● claude            node");
+        assert_eq!(out[2], "");
+        let buffer = buffer(&state, Duration::ZERO);
         assert!(buffer[(1, 0)].modifier.contains(Modifier::BOLD), "busy");
-        assert!(buffer[(1, 2)].modifier.contains(Modifier::DIM), "idle");
     }
 
     #[test]

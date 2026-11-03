@@ -24,6 +24,8 @@ pub enum Mode {
     Normal,
     Help,
     ConfirmKill,
+    /// Typing narrows the registered projects; Enter starts claude in the picked one.
+    Find,
 }
 
 /// Mouse input already translated to sidebar rows; `row` is zero-based from the top.
@@ -77,11 +79,17 @@ pub struct State {
     error: Option<String>,
     own_pane: Option<String>,
     focused: bool,
+    /// Registered projects, the finder's choices.
+    projects: Vec<ProjectRow>,
+    query: String,
+    /// Index into the finder's matches.
+    pick: usize,
 }
 
 impl State {
     /// `own_pane` is the sidebar's own tmux pane id; `None` means running outside tmux.
     pub fn new(tree: Tree, own_pane: Option<String>) -> State {
+        let projects = registered(&tree);
         let rows = rows(tree);
         let cursor = current_agent(&rows).unwrap_or(0);
         State {
@@ -91,6 +99,9 @@ impl State {
             error: None,
             own_pane,
             focused: true,
+            projects,
+            query: String::new(),
+            pick: 0,
         }
     }
 
@@ -116,6 +127,31 @@ impl State {
 
     pub fn focused(&self) -> bool {
         self.focused
+    }
+
+    pub fn projects(&self) -> &[ProjectRow] {
+        &self.projects
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn pick(&self) -> usize {
+        self.pick
+    }
+
+    /// Registered projects whose names hold the letters of the query in order.
+    pub fn found(&self) -> Vec<&ProjectRow> {
+        self.projects
+            .iter()
+            .filter(|project| {
+                let mut letters = project.name.chars();
+                self.query
+                    .chars()
+                    .all(|wanted| letters.any(|letter| letter == wanted))
+            })
+            .collect()
     }
 
     pub fn with_error(self, message: impl Into<String>) -> State {
@@ -148,15 +184,39 @@ impl State {
     }
 
     fn moved(self, delta: isize) -> State {
-        let last = self.rows.len().saturating_sub(1) as isize;
-        let cursor = (self.cursor as isize + delta).clamp(0, last) as usize;
+        let cursor = stepped(self.cursor, delta, self.rows.len());
         State { cursor, ..self }
+    }
+
+    fn picked(self, delta: isize) -> State {
+        let pick = stepped(self.pick, delta, self.found().len());
+        State { pick, ..self }
     }
 }
 
+/// `index` moved by `delta` and kept inside a list of `len` items.
+fn stepped(index: usize, delta: isize, len: usize) -> usize {
+    let last = len.saturating_sub(1) as isize;
+    (index as isize + delta).clamp(0, last) as usize
+}
+
+fn registered(tree: &Tree) -> Vec<ProjectRow> {
+    tree.projects
+        .iter()
+        .filter(|project| project.registered)
+        .map(|project| ProjectRow {
+            name: project.name.clone(),
+            path: project.path.clone(),
+            registered: true,
+        })
+        .collect()
+}
+
+/// Projects with agents, each followed by its agents; projects with none get no row.
 fn rows(tree: Tree) -> Vec<Row> {
     tree.projects
         .into_iter()
+        .filter(|project| !project.agents.is_empty())
         .flat_map(|project| {
             let header = Row::Project(ProjectRow {
                 name: project.name,
@@ -185,6 +245,7 @@ fn same_row(a: &Row, b: &Row) -> bool {
 pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
     match input {
         Input::Snapshot(tree) => {
+            let projects = registered(&tree);
             let rows = rows(tree);
             let newly_current =
                 current_agent(&rows).filter(|now| current_agent(&state.rows) != Some(*now));
@@ -195,14 +256,13 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
                         .and_then(|current| rows.iter().position(|row| same_row(row, current)))
                 })
                 .unwrap_or(state.cursor.min(rows.len().saturating_sub(1)));
-            (
-                State {
-                    rows,
-                    cursor,
-                    ..state
-                },
-                None,
-            )
+            let state = State {
+                rows,
+                cursor,
+                projects,
+                ..state
+            };
+            (state.picked(0), None)
         }
         Input::Focus(focused) => (State { focused, ..state }, None),
         Input::Key(key) => {
@@ -213,6 +273,7 @@ pub fn reduce(state: State, input: Input) -> (State, Option<Command>) {
             match state.mode {
                 Mode::Help => (help_key(state, key), None),
                 Mode::ConfirmKill => confirm_kill_key(state, key),
+                Mode::Find => find_key(state, key),
                 Mode::Normal => normal_key(state, key),
             }
         }
@@ -279,6 +340,61 @@ fn confirm_kill_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
     )
 }
 
+fn find_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
+    match key.code {
+        KeyCode::Esc => (
+            State {
+                mode: Mode::Normal,
+                ..state
+            },
+            None,
+        ),
+        KeyCode::Enter => match state.found().get(state.pick) {
+            Some(project) => {
+                let command = Command::New {
+                    project: (*project).clone(),
+                    program: Program::Claude,
+                };
+                (
+                    State {
+                        mode: Mode::Normal,
+                        ..state
+                    },
+                    Some(command),
+                )
+            }
+            None => (state, None),
+        },
+        KeyCode::Down => (state.picked(1), None),
+        KeyCode::Up => (state.picked(-1), None),
+        KeyCode::Backspace => {
+            let mut letters = state.query.chars();
+            letters.next_back();
+            let query = letters.as_str().to_string();
+            (
+                State {
+                    query,
+                    pick: 0,
+                    ..state
+                },
+                None,
+            )
+        }
+        KeyCode::Char(letter) => {
+            let query = format!("{}{}", state.query, letter.to_ascii_lowercase());
+            (
+                State {
+                    query,
+                    pick: 0,
+                    ..state
+                },
+                None,
+            )
+        }
+        _ => (state, None),
+    }
+}
+
 fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => (state.moved(1), None),
@@ -337,6 +453,15 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
             },
             None,
         ),
+        KeyCode::Char('/') => (
+            State {
+                mode: Mode::Find,
+                query: String::new(),
+                pick: 0,
+                ..state
+            },
+            None,
+        ),
         KeyCode::Char('q') => {
             let command = if state.in_tmux() {
                 Command::Detach
@@ -352,19 +477,30 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::ProjectEntry;
+    use crate::agents::{Agent, ProjectEntry};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 
+    /// Each project runs one claude, so each gets a row.
     fn tree(names: &[&str]) -> Tree {
         Tree {
             projects: names
                 .iter()
-                .map(|n| ProjectEntry {
+                .enumerate()
+                .map(|(index, n)| ProjectEntry {
                     name: n.to_string(),
                     path: PathBuf::from(format!("/p/{n}")),
                     registered: true,
-                    agents: vec![],
+                    agents: vec![Agent {
+                        name: "claude".into(),
+                        project: n.to_string(),
+                        pane_id: format!("%{}", index + 2),
+                        window_id: format!("@{}", index + 2),
+                        current: false,
+                        dead: None,
+                        command: "claude".into(),
+                        status: None,
+                    }],
                 })
                 .collect(),
         }
@@ -386,11 +522,12 @@ mod tests {
     }
 
     #[test]
-    fn starts_with_one_row_per_project_and_the_cursor_on_the_first() {
+    fn starts_with_each_project_above_its_agent_and_the_cursor_on_the_first() {
         let state = inside_tmux();
-        assert_eq!(state.rows().len(), 3);
+        assert_eq!(state.rows().len(), 6);
         assert_eq!(state.cursor(), 0);
         assert!(matches!(state.rows()[0], Row::Project(ref p) if p.name == "project"));
+        assert!(matches!(state.rows()[1], Row::Agent(ref a) if a.project == "project"));
     }
 
     #[test]
@@ -400,10 +537,10 @@ mod tests {
         let (state, _) = press(state, KeyCode::Char('j'));
         let (state, _) = press(state, KeyCode::Down);
         assert_eq!(state.cursor(), 2);
-        let (state, _) = press(state, KeyCode::Char('j'));
-        assert_eq!(state.cursor(), 2);
+        let state = (0..4).fold(state, |state, _| press(state, KeyCode::Char('j')).0);
+        assert_eq!(state.cursor(), 5);
         let (state, _) = press(state, KeyCode::Up);
-        assert_eq!(state.cursor(), 1);
+        assert_eq!(state.cursor(), 4);
     }
 
     #[test]
@@ -446,8 +583,8 @@ mod tests {
         assert_eq!(state.cursor(), 2);
         let (state, command) = reduce(state, Input::Snapshot(tree(&["only"])));
         assert_eq!(command, None);
-        assert_eq!(state.rows().len(), 1);
-        assert_eq!(state.cursor(), 0);
+        assert_eq!(state.rows().len(), 2);
+        assert_eq!(state.cursor(), 1);
     }
 
     #[test]
@@ -521,19 +658,36 @@ mod agent_tests {
                         agent("project", "zsh", "%3"),
                     ],
                 ),
-                project("znaiko", vec![]),
+                project("znaiko", vec![agent("znaiko", "claude", "%4")]),
             ],
         }
+    }
+
+    #[test]
+    fn projects_without_agents_get_no_row_but_stay_findable() {
+        let tree = Tree {
+            projects: vec![
+                project("idle", vec![]),
+                project("busy", vec![agent("busy", "claude", "%2")]),
+            ],
+        };
+        let state = State::new(tree, Some("%1".into()));
+        assert_eq!(state.rows().len(), 2);
+        assert!(matches!(&state.rows()[0], Row::Project(p) if p.name == "busy"));
+        assert!(matches!(&state.rows()[1], Row::Agent(a) if a.pane_id == "%2"));
+        let names: Vec<&str> = state.projects().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["idle", "busy"]);
     }
 
     #[test]
     fn agents_are_rows_right_under_their_project() {
         let state = State::new(tree(), Some("%1".into()));
         let rows = state.rows();
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5);
         assert!(matches!(&rows[1], Row::Agent(a) if a.name == "claude"));
         assert!(matches!(&rows[2], Row::Agent(a) if a.name == "zsh"));
         assert!(matches!(&rows[3], Row::Project(p) if p.name == "znaiko"));
+        assert!(matches!(&rows[4], Row::Agent(a) if a.project == "znaiko"));
     }
 
     #[test]
@@ -573,7 +727,10 @@ mod agent_tests {
         let (state, _) = reduce(
             state,
             Input::Snapshot(Tree {
-                projects: vec![project("znaiko", vec![]), project("project", vec![])],
+                projects: vec![
+                    project("znaiko", vec![agent("znaiko", "claude", "%4")]),
+                    project("project", vec![agent("project", "claude", "%2")]),
+                ],
             }),
         );
         assert_eq!(state.cursor(), 0);
@@ -840,9 +997,188 @@ mod agent_tests {
         let (state, _) = reduce(
             state,
             Input::Snapshot(Tree {
-                projects: vec![project("project", vec![])],
+                projects: vec![project("project", vec![agent("project", "claude", "%2")])],
             }),
         );
-        assert_eq!(state.cursor(), 0);
+        assert_eq!(state.cursor(), 1);
+    }
+}
+
+#[cfg(test)]
+mod finder_tests {
+    use super::*;
+    use crate::agents::ProjectEntry;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn entry(name: &str, registered: bool) -> ProjectEntry {
+        ProjectEntry {
+            name: name.into(),
+            path: PathBuf::from(format!("/p/{name}")),
+            registered,
+            agents: vec![],
+        }
+    }
+
+    fn tree(names: &[&str]) -> Tree {
+        Tree {
+            projects: names.iter().map(|n| entry(n, true)).collect(),
+        }
+    }
+
+    fn press(state: State, code: KeyCode) -> (State, Option<Command>) {
+        reduce(state, Input::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    fn typed(state: State, text: &str) -> State {
+        text.chars()
+            .fold(state, |state, c| press(state, KeyCode::Char(c)).0)
+    }
+
+    fn finder(names: &[&str]) -> State {
+        press(
+            State::new(tree(names), Some("%1".into())),
+            KeyCode::Char('/'),
+        )
+        .0
+    }
+
+    fn found(state: &State) -> Vec<&str> {
+        state.found().iter().map(|p| p.name.as_str()).collect()
+    }
+
+    fn project_row(name: &str) -> ProjectRow {
+        ProjectRow {
+            name: name.into(),
+            path: PathBuf::from(format!("/p/{name}")),
+            registered: true,
+        }
+    }
+
+    #[test]
+    fn slash_opens_the_finder_on_every_registered_project_in_registry_order() {
+        let state = finder(&["proper", "znaiko", "todor.dev"]);
+        assert_eq!(state.mode(), Mode::Find);
+        assert_eq!(state.query(), "");
+        assert_eq!(found(&state), ["proper", "znaiko", "todor.dev"]);
+        assert_eq!(state.pick(), 0);
+    }
+
+    #[test]
+    fn typing_keeps_the_projects_whose_names_hold_the_letters_in_order() {
+        let state = finder(&["proper", "znaiko", "todor.dev", "api-router"]);
+        let state = typed(state, "pr");
+        assert_eq!(state.query(), "pr");
+        assert_eq!(found(&state), ["proper", "api-router"]);
+        assert_eq!(found(&typed(state, "p")), ["proper"]);
+        let state = typed(finder(&["proper", "znaiko", "todor.dev"]), "tdv");
+        assert_eq!(found(&state), ["todor.dev"]);
+    }
+
+    #[test]
+    fn letters_that_move_or_act_elsewhere_are_just_typed_in_the_finder() {
+        let state = typed(finder(&["znaiko", "jk"]), "jk");
+        assert_eq!(state.mode(), Mode::Find);
+        assert_eq!(state.query(), "jk");
+        assert_eq!(found(&state), ["jk"]);
+        let (state, command) = press(typed(finder(&["proper"]), "nsxrq?"), KeyCode::Char('/'));
+        assert_eq!(command, None);
+        assert_eq!(state.query(), "nsxrq?/");
+    }
+
+    #[test]
+    fn capitals_match_the_lowercase_names() {
+        assert_eq!(
+            found(&typed(finder(&["proper", "znaiko"]), "ZK")),
+            ["znaiko"]
+        );
+    }
+
+    #[test]
+    fn backspace_takes_back_the_last_letter() {
+        let state = typed(finder(&["proper", "znaiko"]), "zk");
+        let (state, _) = press(state, KeyCode::Backspace);
+        assert_eq!(state.query(), "z");
+        let (state, _) = press(state, KeyCode::Backspace);
+        let (state, _) = press(state, KeyCode::Backspace);
+        assert_eq!(state.query(), "");
+        assert_eq!(state.mode(), Mode::Find);
+        assert_eq!(found(&state), ["proper", "znaiko"]);
+    }
+
+    #[test]
+    fn down_and_up_move_the_pick_within_the_matches_and_typing_resets_it() {
+        let state = finder(&["proper", "znaiko", "todor.dev"]);
+        let (state, _) = press(state, KeyCode::Up);
+        assert_eq!(state.pick(), 0);
+        let (state, _) = press(state, KeyCode::Down);
+        let (state, _) = press(state, KeyCode::Down);
+        let (state, _) = press(state, KeyCode::Down);
+        assert_eq!(state.pick(), 2);
+        let (state, _) = press(state, KeyCode::Up);
+        assert_eq!(state.pick(), 1);
+        assert_eq!(typed(state, "o").pick(), 0);
+    }
+
+    #[test]
+    fn enter_starts_claude_in_the_picked_project_and_closes_the_finder() {
+        let state = typed(finder(&["proper", "znaiko", "todor.dev"]), "o");
+        let (state, _) = press(state, KeyCode::Down);
+        let (state, command) = press(state, KeyCode::Enter);
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project: project_row("znaiko"),
+                program: Program::Claude
+            })
+        );
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn enter_with_nothing_matching_does_nothing() {
+        let state = typed(finder(&["proper"]), "zzz");
+        assert!(state.found().is_empty());
+        let (state, command) = press(state, KeyCode::Enter);
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Find);
+    }
+
+    #[test]
+    fn esc_closes_the_finder_and_reopening_starts_afresh() {
+        let state = typed(finder(&["proper", "znaiko"]), "zk");
+        let (state, command) = press(state, KeyCode::Esc);
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Normal);
+        let (state, _) = press(state, KeyCode::Char('/'));
+        assert_eq!(state.query(), "");
+        assert_eq!(found(&state), ["proper", "znaiko"]);
+    }
+
+    #[test]
+    fn a_click_closes_the_finder() {
+        let (state, command) = reduce(finder(&["proper"]), Input::Mouse(Mouse::Click { row: 0 }));
+        assert_eq!(command, None);
+        assert_eq!(state.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn the_finder_leaves_out_projects_no_longer_registered() {
+        let tree = Tree {
+            projects: vec![entry("proper", true), entry("gone", false)],
+        };
+        let (state, _) = press(State::new(tree, Some("%1".into())), KeyCode::Char('/'));
+        assert_eq!(found(&state), ["proper"]);
+    }
+
+    #[test]
+    fn a_snapshot_refreshes_the_matches_and_keeps_the_pick_on_one() {
+        let state = finder(&["proper", "znaiko", "todor.dev"]);
+        let (state, _) = press(state, KeyCode::Down);
+        let (state, _) = press(state, KeyCode::Down);
+        let (state, _) = reduce(state, Input::Snapshot(tree(&["proper", "zeta"])));
+        assert_eq!(state.mode(), Mode::Find);
+        assert_eq!(found(&state), ["proper", "zeta"]);
+        assert_eq!(state.pick(), 1);
     }
 }

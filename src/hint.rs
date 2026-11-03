@@ -3,7 +3,10 @@
 const TEXT: &str = "
   proper
 
-  Pick a project in the sidebar, then
+    /   find a project and start
+        claude in it
+
+  On a project or agent in the sidebar:
 
     n   start claude there
     s   open a shell there
