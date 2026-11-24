@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::agents::{Agent, Tree};
+use crate::config::Launcher;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRow {
@@ -54,6 +55,8 @@ pub enum Program {
     Shell,
     /// Claude in a new git worktree of that name.
     Worktree(String),
+    /// A program of the user's own, from `launchers.toml`.
+    Launcher(Launcher),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +95,7 @@ pub struct State {
     /// The project a worktree prompt starts claude in.
     worktree_project: Option<ProjectRow>,
     worktree_name: String,
+    launchers: Vec<Launcher>,
 }
 
 impl State {
@@ -112,7 +116,16 @@ impl State {
             pick: 0,
             worktree_project: None,
             worktree_name: String::new(),
+            launchers: Vec::new(),
         }
+    }
+
+    pub fn with_launchers(self, launchers: Vec<Launcher>) -> State {
+        State { launchers, ..self }
+    }
+
+    pub fn launchers(&self) -> &[Launcher] {
+        &self.launchers
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -548,6 +561,16 @@ fn normal_key(state: State, key: KeyEvent) -> (State, Option<Command>) {
             };
             (state, Some(command))
         }
+        KeyCode::Char(key) => {
+            let launcher = state.launchers.iter().find(|l| l.key == key).cloned();
+            let command = launcher.and_then(|launcher| {
+                state.project_at_cursor().map(|project| Command::New {
+                    project,
+                    program: Program::Launcher(launcher),
+                })
+            });
+            (state, command)
+        }
         _ => (state, None),
     }
 }
@@ -889,6 +912,47 @@ mod agent_tests {
                 program: Program::Claude
             })
         );
+    }
+
+    fn reviewer() -> Launcher {
+        Launcher {
+            key: 'a',
+            name: "reviewer".into(),
+            command: vec!["/reviewer/bin/start".into()],
+        }
+    }
+
+    #[test]
+    fn a_launcher_key_starts_its_program_in_the_project_under_the_cursor() {
+        let state = State::new(tree(), Some("%1".into())).with_launchers(vec![reviewer()]);
+        let project = state.project_at_cursor().unwrap();
+        let (state, command) = reduce(state, Input::Key(KeyCode::Char('a').into()));
+        assert_eq!(
+            command,
+            Some(Command::New {
+                project,
+                program: Program::Launcher(reviewer())
+            })
+        );
+        assert_eq!(state.error(), None);
+    }
+
+    #[test]
+    fn a_key_no_launcher_has_does_nothing() {
+        let state = State::new(tree(), Some("%1".into()));
+        let (_, command) = reduce(state, Input::Key(KeyCode::Char('a').into()));
+        assert_eq!(command, None);
+
+        let state = State::new(tree(), Some("%1".into())).with_launchers(vec![reviewer()]);
+        let (_, command) = reduce(state, Input::Key(KeyCode::Char('b').into()));
+        assert_eq!(command, None);
+    }
+
+    #[test]
+    fn launchers_survive_a_snapshot() {
+        let state = State::new(tree(), Some("%1".into())).with_launchers(vec![reviewer()]);
+        let (state, _) = reduce(state, Input::Snapshot(tree()));
+        assert_eq!(state.launchers(), [reviewer()]);
     }
 
     #[test]

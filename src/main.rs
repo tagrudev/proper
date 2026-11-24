@@ -174,7 +174,10 @@ fn run(cli: Cli) -> Result<()> {
             own_pane: std::env::var("TMUX_PANE").ok(),
         }
         .run(),
-        Some(Command::Hint) => proper::hint::run(),
+        // A broken launchers file is reported by the sidebar; the hint just leaves them out.
+        Some(Command::Hint) => {
+            proper::hint::run(&config::load_launchers(&config_dir).unwrap_or_default())
+        }
         None => open(config_dir),
     }
 }
