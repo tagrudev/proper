@@ -45,10 +45,11 @@ impl Sidebar {
             Snapshot::Alone => return Ok(()),
             Snapshot::Tree { tree, focused } => (tree, focused),
         };
-        let (mut state, _) = reduce(
+        let (state, _) = reduce(
             State::new(tree, self.own_pane.clone()),
             Input::Focus(focused),
         );
+        let mut state = self.with_launchers(state);
         let started = Instant::now();
         let mut refreshed = started;
         loop {
@@ -88,12 +89,21 @@ impl Sidebar {
                     Ok(Snapshot::Alone) => return Ok(()),
                     Ok(Snapshot::Tree { tree, focused }) => {
                         let (state, _) = reduce(state, Input::Snapshot(tree));
-                        reduce(state, Input::Focus(focused)).0
+                        self.with_launchers(reduce(state, Input::Focus(focused)).0)
                     }
                     Err(err) => state.with_error(err.root_cause().to_string()),
                 };
                 refreshed = Instant::now();
             }
+        }
+    }
+
+    /// Re-reads `launchers.toml` so an edit reaches a running sidebar; a broken file
+    /// shows as an error and leaves the launchers as they were.
+    fn with_launchers(&self, state: State) -> State {
+        match self.workspace.launchers() {
+            Ok(launchers) => state.with_launchers(launchers),
+            Err(err) => state.with_error(err.to_string()),
         }
     }
 
@@ -177,11 +187,17 @@ impl Sidebar {
                         vec![std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())],
                     ),
                     Program::Worktree(worktree) => (
-                        Some(worktree.as_str()),
+                        Some(worktree.clone()),
                         vec!["claude".to_string(), "-w".to_string(), worktree.clone()],
                     ),
+                    // Named as the launcher says, not after its program's file.
+                    Program::Launcher(launcher) => (
+                        Some(self.workspace.free_name(&project, &launcher.name)?),
+                        launcher.command.clone(),
+                    ),
                 };
-                self.workspace.new_agent(&project, name, &command)?;
+                self.workspace
+                    .new_agent(&project, name.as_deref(), &command)?;
                 Ok(Flow::Continue)
             }
             Command::Detach => {

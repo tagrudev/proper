@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 use crate::agents::{Agent, Tree, unique_name};
-use crate::config::{Project, Projects, validate_name};
+use crate::config::{Launcher, Project, Projects, load_launchers, validate_name};
 use crate::tmux::{Pane, Role, Server, Status};
 
 pub const SESSION: &str = "proper";
@@ -67,6 +67,15 @@ fn agent_name_for(program: &str) -> Result<String> {
     validate_name(&name)
         .with_context(|| format!("cannot name an agent after {program:?}; pass --name"))?;
     Ok(name)
+}
+
+/// The names of the agents `project` already has.
+fn agent_names<'a>(tree: &'a Tree, project: &Project) -> Vec<&'a str> {
+    tree.projects
+        .iter()
+        .filter(|p| p.name == project.name)
+        .flat_map(|p| p.agents.iter().map(|a| a.name.as_str()))
+        .collect()
 }
 
 /// Which sound a status change should play: none while working, the default or the
@@ -192,8 +201,17 @@ impl Workspace {
         Projects::load(&self.config_dir)
     }
 
+    pub fn launchers(&self) -> Result<Vec<Launcher>> {
+        load_launchers(&self.config_dir)
+    }
+
     pub fn save_projects(&self, projects: &Projects) -> Result<()> {
         projects.save(&self.config_dir)
+    }
+
+    /// `base`, or `base-2`, `base-3`… when the project already has an agent of that name.
+    pub fn free_name(&self, project: &Project, base: &str) -> Result<String> {
+        Ok(unique_name(base, &agent_names(&self.tree()?, project)))
     }
 
     /// Opens a window named `project/name` running `command` in the project directory,
@@ -206,12 +224,7 @@ impl Workspace {
     ) -> Result<Agent> {
         let program = command.first().context("agent command is empty")?;
         let tree = self.tree()?;
-        let taken: Vec<&str> = tree
-            .projects
-            .iter()
-            .filter(|p| p.name == project.name)
-            .flat_map(|p| p.agents.iter().map(|a| a.name.as_str()))
-            .collect();
+        let taken = agent_names(&tree, project);
         let name = match name {
             Some(name) => {
                 validate_name(name)?;

@@ -17,18 +17,21 @@ const CURSOR: Color = Color::Indexed(237);
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_FRAME: Duration = Duration::from_millis(100);
 
-const HELP: &[&str] = &[
+/// Launchers from `launchers.toml` are listed between the two halves.
+const HELP_STARTING: &[&str] = &[
     " j/k   move",
     " Enter open agent",
     " n     new claude",
     " s     new shell",
     " w     new worktree",
+];
+
+const HELP_REST: &[&str] = &[
     " /     find project",
     " x     kill agent",
     " r     respawn dead",
     " q     detach",
-    " ?     toggle help",
-    " Esc   close help",
+    " ?/Esc close help",
 ];
 
 /// `elapsed` is how long the sidebar has been running; it turns the spinner of working agents.
@@ -42,7 +45,17 @@ pub fn render(frame: &mut Frame, state: &State, elapsed: Duration) {
 
 fn body_lines(state: &State, area: Rect, elapsed: Duration) -> Vec<Line<'static>> {
     match state.mode() {
-        Mode::Help => HELP.iter().map(|h| Line::from(*h)).collect(),
+        Mode::Help => {
+            let launchers = state
+                .launchers()
+                .iter()
+                .map(|l| Line::from(format!(" {}     new {}", l.key, l.name)));
+            let fixed = |lines: &'static [&'static str]| lines.iter().map(|h| Line::from(*h));
+            fixed(HELP_STARTING)
+                .chain(launchers)
+                .chain(fixed(HELP_REST))
+                .collect()
+        }
         Mode::Worktree => {
             let project = state
                 .worktree_project()
@@ -300,6 +313,29 @@ mod tests {
         ] {
             assert!(text.contains(key), "missing {key:?} in\n{text}");
         }
+        assert!(
+            !text.contains(" a "),
+            "no launchers, so no launcher keys\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_lists_launchers_after_the_built_in_programs() {
+        let state = State::new(tree(&["project"]), Some("%1".into())).with_launchers(vec![
+            crate::config::Launcher {
+                key: 'a',
+                name: "reviewer".into(),
+                command: vec!["reviewer".into()],
+            },
+        ]);
+        let (state, _) = reduce(
+            state,
+            Input::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        );
+        let lines = lines(&state);
+        assert_eq!(lines[4], " w     new worktree");
+        assert_eq!(lines[5], " a     new reviewer");
+        assert_eq!(lines[6], " /     find project");
     }
 
     /// The finder opened on idle projects named `names`, with `text` typed.

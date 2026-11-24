@@ -79,6 +79,29 @@ under the cursor, and Claude Code creates that git worktree and works in it.
 The agent takes the worktree's name, so its window is `project/<name>`.
 `Enter` starts it, `Esc` cancels, and an empty name is refused.
 
+### Your own launchers
+
+`n`, `s` and `w` start what proper knows about. Other programs get a key of
+their own in `~/.config/proper/launchers.toml`:
+
+```toml
+[[launchers]]
+key = "a"
+name = "reviewer"
+command = ["~/Projects/reviewer/bin/start", "--verbose"]
+```
+
+Pressing `a` then runs that command in the directory of the project under the
+cursor and names the agent `reviewer` (`reviewer-2` for a second one in the
+same project), so its window is `project/reviewer`. `command` is a list of
+words run as they are, without a shell; a leading `~/` in a word becomes your
+home directory. `key` is one character and cannot be a key proper uses
+itself. Launchers are listed in the help (`?`).
+
+A running sidebar picks up edits to the file within a second and shows a
+mistake in it in the footer. The hint pane lists the launchers it found when
+proper started.
+
 With the mouse: click an agent row to open it, click a project row to move the
 cursor, and the wheel scrolls the list.
 
@@ -125,7 +148,7 @@ profile.
   killing every agent never kills the server.
 - Each agent window is named `project/agent`. Panes carry `@proper_role`,
   `@proper_project` and `@proper_agent` options; that is the only state besides
-  `~/.config/proper/projects.toml`.
+  `projects.toml` and the hand-written `launchers.toml` in `~/.config/proper`.
 - Every sidebar re-reads `tmux list-panes -a` when a tmux hook signals a
   change (window switch, focus moving between panes, new or dead pane,
   options set) and once a second as a fallback, so all of them agree without

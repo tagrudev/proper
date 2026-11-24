@@ -619,6 +619,56 @@ mod sidebar_keys {
     }
 
     #[test]
+    fn a_launcher_key_in_the_sidebar_starts_its_program_under_the_launcher_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TestServer::start();
+        let (ws, config, project) = up(&t);
+        let script = config.path().join("interactive");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 1000\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            config.path().join("launchers.toml"),
+            format!(
+                "[[launchers]]\nkey = \"a\"\nname = \"reviewer\"\ncommand = [{:?}]\n",
+                script.display().to_string()
+            ),
+        )
+        .unwrap();
+        ws.new_agent(&project, None, &["sleep".to_string(), "1000".to_string()])
+            .unwrap();
+        t.server
+            .run(&t.server.argv(["select-window", "-t", "proper:home"]))
+            .unwrap();
+        let sidebar = sidebar_of(&t.server.list_panes().unwrap(), "home");
+        assert!(wait_until(|| t
+            .server
+            .run(&t.server.argv(["capture-pane", "-p", "-t", &sidebar.id]))
+            .unwrap()
+            .contains(" project\n └ ● sleep")));
+
+        keys(&t, &sidebar.id, &["a"]);
+
+        let is_reviewer =
+            |p: &Pane| p.role == Some(Role::Agent) && p.window_name == "project/reviewer";
+        assert!(wait_until(|| {
+            t.server
+                .list_panes()
+                .unwrap()
+                .iter()
+                .any(|p| is_reviewer(p) && p.window_active)
+        }));
+        let panes = t.server.list_panes().unwrap();
+        let agent = panes.iter().find(|p| is_reviewer(p)).unwrap();
+        assert_eq!(agent.project, "project");
+        // The script's own process reports the directory with symlinks resolved.
+        assert_eq!(
+            std::fs::canonicalize(&agent.path).unwrap(),
+            std::fs::canonicalize(&project.path).unwrap()
+        );
+        assert!(agent.pane_active, "focus moved into reviewer");
+    }
+
+    #[test]
     fn w_in_the_sidebar_starts_claude_in_a_named_worktree_of_the_project() {
         use std::os::unix::fs::PermissionsExt;
         let t = TestServer::start();
